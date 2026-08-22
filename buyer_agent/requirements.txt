@@ -1,0 +1,12 @@
+langgraph
+langchain-core
+langchain-google-genai
+google-genai
+mcp
+pydantic
+pydantic-settings
+sqlalchemy
+asyncpg
+redis
+celery
+httpx
