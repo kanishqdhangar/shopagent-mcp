@@ -10,3 +10,5 @@ asyncpg
 redis
 celery
 httpx
+pytest
+pytest-asyncio

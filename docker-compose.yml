@@ -100,12 +100,15 @@ services:
         condition: service_started
 
     volumes:
-      - ./buyer_agent:/app
+      - ./buyer_agent:/app/buyer_agent
+
+    working_dir: /app
 
     command:
       [
         "python",
-        "main.py"
+        "-m",
+        "buyer_agent.main"
       ]
 
 volumes:

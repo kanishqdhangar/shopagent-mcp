@@ -1,5 +1,7 @@
 from mcp.server import MCPServer
 
+from mcp.server.transport_security import TransportSecuritySettings
+
 from app.db import AsyncSessionLocal
 from app.schemas import ProductResponse
 from app.services.embedding_service import embedding_service

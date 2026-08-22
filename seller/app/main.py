@@ -1,9 +1,10 @@
 from uuid import UUID
-
+from mcp.server.transport_security import TransportSecuritySettings
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.mcp_server import mcp
 from contextlib import asynccontextmanager
 
@@ -35,6 +36,16 @@ app = FastAPI(
     title="ShopAgent Seller API",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=[
+        "localhost",
+        "127.0.0.1",
+        "seller",
+        "seller:8000",
+    ],
 )
 
 @app.get("/health")
@@ -163,7 +174,19 @@ app.mount(
         stateless_http=True,
         json_response=True,
         streamable_http_path="/",
-    ),
+        transport_security=TransportSecuritySettings(
+            allowed_hosts=[
+                "localhost:*",
+                "127.0.0.1:*",
+                "seller:*",
+            ],
+            allowed_origins=[
+                "http://localhost:*",
+                "http://127.0.0.1:*",
+                "http://seller:*",
+            ],
+        ),
+    )
 )
 #used only for testing purposes no need in prod
 
