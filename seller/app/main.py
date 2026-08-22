@@ -15,8 +15,12 @@ from app.services.product_service import (
     create_product,
     get_product,
     get_products,
+    generate_missing_embeddings, 
+    search_products
 )
-
+from pydantic import BaseModel
+from app.services.embedding_service import embedding_service
+from app.services.product_embedding import product_to_embedding_text
 
 app = FastAPI(
     title="ShopAgent Seller API",
@@ -45,6 +49,9 @@ async def database_health(
         "result": value,
     }
 
+class ProductSearchRequest(BaseModel):
+    query: str
+    limit: int = 10
 
 @app.post(
     "/products",
@@ -109,3 +116,73 @@ async def inventory_endpoint(
         stock_qty=product.stock_qty,
         in_stock=product.stock_qty > 0,
     )
+
+@app.post("/products/search")
+async def search_products_endpoint(
+    request: ProductSearchRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    query_embedding = (
+        await embedding_service.generate_embedding(
+            request.query
+        )
+    )
+
+    results = await search_products(
+        db,
+        query_embedding,
+        request.limit,
+    )
+
+    return {
+        "query": request.query,
+        "results": [
+            {
+                "product": ProductResponse.model_validate(
+                    product
+                ).model_dump(mode="json"),
+                "distance": distance,
+                "similarity": 1 - distance,
+            }
+            for product, distance in results
+        ],
+    }
+
+#used only for testing purposes no need in prod
+
+# @app.post("/products/{product_id}/embedding/test")
+# async def test_product_embedding(
+#     product_id: UUID,
+#     db: AsyncSession = Depends(get_db),
+# ):
+#     product = await get_product(db, product_id)
+
+#     if product is None:
+#         raise HTTPException(
+#             status_code=404,
+#             detail="Product not found",
+#         )
+
+#     text = product_to_embedding_text(product)
+
+#     embedding = await embedding_service.generate_embedding(
+#         text
+#     )
+
+#     return {
+#         "product_id": product.id,
+#         "text": text,
+#         "dimensions": len(embedding),
+#         "embedding_preview": embedding[:5],
+#     }
+
+# @app.post("/products/embeddings/backfill")
+# async def backfill_embeddings(
+#     db: AsyncSession = Depends(get_db),
+# ):
+#     count = await generate_missing_embeddings(db)
+
+#     return {
+#         "status": "ok",
+#         "updated_products": count,
+#     }
