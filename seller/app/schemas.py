@@ -17,7 +17,7 @@ class ProductCreate(BaseModel):
 
 class ProductResponse(ProductCreate):
     id: UUID
-    embedding: list[float] | None = None
+    # embedding: list[float] | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

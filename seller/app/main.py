@@ -4,6 +4,9 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.mcp_server import mcp
+from contextlib import asynccontextmanager
+
 from app.db import get_db
 from app.schemas import (
     InventoryResponse,
@@ -22,11 +25,17 @@ from pydantic import BaseModel
 from app.services.embedding_service import embedding_service
 from app.services.product_embedding import product_to_embedding_text
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with mcp.session_manager.run():
+        yield
+
+
 app = FastAPI(
     title="ShopAgent Seller API",
     version="0.1.0",
+    lifespan=lifespan,
 )
-
 
 @app.get("/health")
 async def health():
@@ -148,6 +157,14 @@ async def search_products_endpoint(
         ],
     }
 
+app.mount(
+    "/mcp",
+    mcp.streamable_http_app(
+        stateless_http=True,
+        json_response=True,
+        streamable_http_path="/",
+    ),
+)
 #used only for testing purposes no need in prod
 
 # @app.post("/products/{product_id}/embedding/test")
