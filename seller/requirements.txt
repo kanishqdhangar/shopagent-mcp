@@ -12,3 +12,4 @@ httpx
 razorpay
 mcp
 google-genai
+psycopg[binary]
