@@ -2,7 +2,7 @@ import asyncio
 
 from langchain_core.messages import HumanMessage
 
-from buyer_agent.graph import buyer_graph
+from graph import buyer_graph
 
 
 async def main():
@@ -16,7 +16,8 @@ async def main():
         {
             "messages": [
                 HumanMessage(content=user_request)
-            ]
+            ],
+            "products": [],
         }
     )
 
@@ -24,6 +25,8 @@ async def main():
 
     print("\nBuyer Agent Response:")
     print(final_message.content)
+    print("\nProducts:")
+    print(result["products"])
 
 
 if __name__ == "__main__":

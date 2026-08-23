@@ -1,11 +1,16 @@
+from typing import Any, Annotated, TypedDict
+
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-from buyer_agent.nodes.buyer_node import (
-    BuyerState,
-    buyer_node,
-)
-from buyer_agent.tools.mcp_tools import MCP_TOOLS
+from nodes.buyer_node import buyer_node
+from tools.mcp_tools import MCP_TOOLS
+from nodes.tool_result_node import extract_products
+
+class BuyerState(TypedDict):
+    messages: Annotated[list, add_messages]
+    products: list[dict[str, Any]]
 
 
 def should_continue(state: BuyerState):
@@ -30,6 +35,11 @@ def build_buyer_graph():
         ToolNode(MCP_TOOLS),
     )
 
+    builder.add_node(
+        "extract_products",
+        extract_products,
+    )
+
     builder.add_edge(
         START,
         "buyer_agent",
@@ -46,6 +56,11 @@ def build_buyer_graph():
 
     builder.add_edge(
         "tools",
+        "extract_products",
+    )
+
+    builder.add_edge(
+        "extract_products",
         "buyer_agent",
     )
 

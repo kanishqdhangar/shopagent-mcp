@@ -1,4 +1,4 @@
-from buyer_agent.services.product_filter import filter_products
+from services.product_filter import filter_products
 
 
 PRODUCTS = [

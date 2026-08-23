@@ -4,8 +4,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
-from buyer_agent.config import settings
-from buyer_agent.tools.mcp_tools import MCP_TOOLS
+from config import settings
+from tools.mcp_tools import MCP_TOOLS
 
 
 class BuyerState(TypedDict):

@@ -12,3 +12,5 @@ celery
 httpx
 pytest
 pytest-asyncio
+fastapi
+uvicorn[standard]

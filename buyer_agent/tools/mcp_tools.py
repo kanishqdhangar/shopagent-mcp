@@ -3,9 +3,9 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
-from buyer_agent.mcp_client import get_mcp_session
+from mcp_client import get_mcp_session
 
-from buyer_agent.services.product_filter import filter_products
+from services.product_filter import filter_products
 
 async def _call_mcp_tool(
     tool_name: str,
