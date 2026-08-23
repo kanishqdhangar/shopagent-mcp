@@ -7,9 +7,9 @@ from buyer_agent.graph import buyer_graph
 
 async def main():
     user_request = (
-        "Tell me about UrbanRun Lightweight Shoes. "
-        "Give me its price, specifications, and description, "
-        "and check whether it is currently in stock."
+        "Find me lightweight running shoes "
+        "for daily training under ₹3500. "
+        "Only recommend products that are in stock."
     )
 
     result = await buyer_graph.ainvoke(

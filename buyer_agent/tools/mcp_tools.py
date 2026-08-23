@@ -5,6 +5,7 @@ from langchain_core.tools import StructuredTool
 
 from buyer_agent.mcp_client import get_mcp_session
 
+from buyer_agent.services.product_filter import filter_products
 
 async def _call_mcp_tool(
     tool_name: str,
@@ -32,8 +33,12 @@ async def _call_mcp_tool(
 async def search_catalog(
     query: str,
     limit: int = 5,
+    max_price: float | None = None,
+    require_in_stock: bool = False,
+    category: str | None = None,
+    subtype: str | None = None,
 ) -> dict[str, Any]:
-    return await _call_mcp_tool(
+    result = await _call_mcp_tool(
         "search_catalog",
         {
             "query": query,
@@ -41,6 +46,18 @@ async def search_catalog(
         },
     )
 
+    filtered_results = filter_products(
+        result.get("results", []),
+        max_price=max_price,
+        require_in_stock=require_in_stock,
+        category=category,
+        subtype=subtype,
+    )
+
+    return {
+        "query": result.get("query", query),
+        "results": filtered_results,
+    }
 
 async def get_product(
     product_id: str,
@@ -70,7 +87,9 @@ search_catalog_tool = StructuredTool.from_function(
     description=(
         "Search the ShopAgent product catalog using "
         "semantic similarity. Use this when the user "
-        "is looking for products."
+        "is looking for products. Apply max_price, "
+        "require_in_stock, category, and subtype when "
+        "the user specifies those constraints."
     ),
 )
 
