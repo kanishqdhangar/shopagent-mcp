@@ -6,6 +6,7 @@ from langchain_core.tools import StructuredTool
 from mcp_client import get_mcp_session
 
 from services.product_filter import filter_products
+from services.followup_filter import filter_previous_products
 
 async def _call_mcp_tool(
     tool_name: str,
@@ -85,11 +86,14 @@ search_catalog_tool = StructuredTool.from_function(
     coroutine=search_catalog,
     name="search_catalog",
     description=(
-        "Search the ShopAgent product catalog using "
-        "semantic similarity. Use this when the user "
-        "is looking for products. Apply max_price, "
-        "require_in_stock, category, and subtype when "
-        "the user specifies those constraints."
+        "Search the ShopAgent product catalog using semantic similarity. "
+        "Use this when the user is looking for products. "
+        "Always apply explicit constraints from the user's request. "
+        "If the user asks for a specific product type such as running shoes, "
+        "use the appropriate category and subtype filters. "
+        "For example, 'running shoes' should use category='running' "
+        "and subtype='shoes'. "
+        "Apply max_price and require_in_stock when specified."
     ),
 )
 

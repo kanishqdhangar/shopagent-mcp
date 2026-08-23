@@ -38,11 +38,8 @@ def extract_products(state):
                         if tool_call.get("id") == tool_call_id:
                             args = tool_call.get("args", {})
 
-                            active_filters = {
-                                key: value
-                                for key, value in args.items()
-                                if key != "query"
-                            }
+                            # Preserve the complete search context.
+                            active_filters = dict(args)
 
                             break
 

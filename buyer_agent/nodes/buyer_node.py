@@ -22,59 +22,54 @@ llm = ChatGoogleGenerativeAI(
 llm_with_tools = llm.bind_tools(MCP_TOOLS)
 
 
+SYSTEM_PROMPT = """
+You are the ShopAgent Buyer Agent.
+
+You help users search and compare products from the ShopAgent catalog.
+
+IMPORTANT:
+
+- Use search_catalog when the user is looking for new products.
+- Respect explicit constraints such as price, stock, category, subtype,
+  size, color, and other product requirements.
+- For follow-up requests, use ONLY the products currently provided in
+  CURRENT PRODUCT CONTEXT when the request refers to previous results.
+- Never introduce products that are not present in CURRENT PRODUCT CONTEXT
+  for a follow-up request.
+- If the user says "cheaper", return only products from CURRENT PRODUCT
+  CONTEXT that satisfy the cheaper request.
+- If the user says "more expensive", return only products from CURRENT
+  PRODUCT CONTEXT that satisfy the request.
+- If the user says "show black ones", "UK 8", etc., filter CURRENT PRODUCT
+  CONTEXT when possible.
+- Do not call search_catalog for a follow-up filtering request when
+  CURRENT PRODUCT CONTEXT already contains the relevant products.
+- Do not forget previous search constraints during follow-up requests.
+- Never recommend products that violate an explicit user constraint.
+- Only claim a product is in stock when its stock_qty is greater than zero.
+- Give concise, useful shopping recommendations.
+"""
+
 async def buyer_node(state: BuyerState):
+    products = state.get("products", [])
     active_filters = state.get("active_filters", {})
 
-    system_prompt = """
-You are ShopAgent, an AI shopping assistant.
+    context = SystemMessage(
+        content=(
+            SYSTEM_PROMPT
+            + "\n\nCURRENT PRODUCT CONTEXT:\n"
+            + str(products)
+            + "\n\nACTIVE FILTERS:\n"
+            + str(active_filters)
+        )
+    )
 
-You help users find products using the available catalog tools.
-
-IMPORTANT FOLLOW-UP RULE:
-
-When active shopping filters exist, preserve them across follow-up
-requests unless the user explicitly changes or removes a filter.
-
-For example, if the previous request established:
-- category: running shoes
-- max price: ₹3500
-- require in-stock: true
-
-and the user says:
-"Show me the cheaper ones"
-
-you must continue searching only within:
-- running shoes
-- under ₹3500
-- in-stock products
-
-The phrase "cheaper ones" means prioritize/filter the existing
-product context by price. It does NOT mean searching the entire catalog.
-
-Never remove an existing shopping constraint unless the user explicitly
-asks you to change or remove it.
-
-Use the available tools whenever product information is required.
-"""
-
-    if active_filters:
-        system_prompt += f"""
-
-CURRENT ACTIVE SHOPPING FILTERS:
-{active_filters}
-
-These filters came from the user's previous shopping request.
-Preserve them for the current request unless the user explicitly
-changes them.
-"""
-
-    messages = [
-        SystemMessage(content=system_prompt),
-        *state["messages"],
-    ]
-
-    response = await llm_with_tools.ainvoke(messages)
+    response = await llm_with_tools.ainvoke(
+        [context, *state["messages"]]
+    )
 
     return {
-        "messages": [response]
+        "messages": [response],
+        "products": products,
+        "active_filters": active_filters,
     }

@@ -89,7 +89,14 @@ async def chat(request: ChatRequest):
             }
         },
     )
-
+    print("\n=== FINAL GRAPH STATE ===")
+    print("PRODUCT COUNT:", len(result.get("products", [])))
+    print(
+        "PRODUCTS:",
+        [p.get("name") for p in result.get("products", [])]
+    )
+    print("FILTERS:", result.get("active_filters"))
+    print("=========================\n")
     final_message = result["messages"][-1]
 
     return ChatResponse(
