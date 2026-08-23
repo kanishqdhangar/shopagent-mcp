@@ -1,19 +1,35 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from langchain_core.messages import HumanMessage
 
-from graph import buyer_graph
+from graph import build_buyer_graph
+
+
+buyer_graph = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global buyer_graph
+
+    buyer_graph = await build_buyer_graph()
+
+    yield
 
 
 app = FastAPI(
     title="ShopAgent Buyer Agent",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: str
 
 
 class ProductResponse(BaseModel):
@@ -32,18 +48,9 @@ class ChatResponse(BaseModel):
     response: str
     products: list[ProductResponse]
 
+
 def extract_product_data(products: list[dict]) -> list[dict]:
-    result = []
-
-    for item in products:
-        product = item.get("product")
-
-        if not product:
-            continue
-
-        result.append(product)
-
-    return result
+    return products
 
 def extract_text(content) -> str:
     if isinstance(content, str):
@@ -62,6 +69,7 @@ def extract_text(content) -> str:
 
     return str(content)
 
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -74,8 +82,12 @@ async def chat(request: ChatRequest):
             "messages": [
                 HumanMessage(content=request.message)
             ],
-            "products": [],
-        }
+        },
+        config={
+            "configurable": {
+                "thread_id": request.session_id,
+            }
+        },
     )
 
     final_message = result["messages"][-1]

@@ -1,5 +1,6 @@
 from typing import Any, Annotated, TypedDict
 
+from langgraph.checkpoint.redis import AsyncRedisSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -8,9 +9,33 @@ from nodes.buyer_node import buyer_node
 from tools.mcp_tools import MCP_TOOLS
 from nodes.tool_result_node import extract_products
 
-class BuyerState(TypedDict):
+
+def replace_products(
+    current: list[dict[str, Any]],
+    new: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return new
+
+
+def replace_filters(
+    current: dict[str, Any],
+    new: dict[str, Any],
+) -> dict[str, Any]:
+    return new
+
+
+class BuyerState(TypedDict, total=False):
     messages: Annotated[list, add_messages]
-    products: list[dict[str, Any]]
+
+    products: Annotated[
+        list[dict[str, Any]],
+        replace_products,
+    ]
+
+    active_filters: Annotated[
+        dict[str, Any],
+        replace_filters,
+    ]
 
 
 def should_continue(state: BuyerState):
@@ -22,7 +47,13 @@ def should_continue(state: BuyerState):
     return END
 
 
-def build_buyer_graph():
+async def build_buyer_graph():
+    checkpointer = AsyncRedisSaver(
+        redis_url="redis://redis:6379"
+    )
+
+    await checkpointer.asetup()
+
     builder = StateGraph(BuyerState)
 
     builder.add_node(
@@ -64,7 +95,6 @@ def build_buyer_graph():
         "buyer_agent",
     )
 
-    return builder.compile()
-
-
-buyer_graph = build_buyer_graph()
+    return builder.compile(
+        checkpointer=checkpointer,
+    )

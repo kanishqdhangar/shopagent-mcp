@@ -27,7 +27,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis/redis-stack-server:latest
     container_name: shopagent-redis
     restart: unless-stopped
 

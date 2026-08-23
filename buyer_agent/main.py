@@ -18,6 +18,7 @@ async def main():
                 HumanMessage(content=user_request)
             ],
             "products": [],
+            "active_filters": {},
         }
     )
 
