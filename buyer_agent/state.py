@@ -30,7 +30,8 @@ class AgentState(TypedDict):
     candidates: list[dict]
     chosen_product: Optional[dict]
     upsell_offer: Optional[dict]
-
+    confidence: float
+    
     budget_ceiling: float
 
     order_status: str

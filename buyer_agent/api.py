@@ -3,8 +3,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from langchain_core.messages import HumanMessage
-
 from graph import build_buyer_graph
 
 
@@ -49,9 +47,6 @@ class ChatResponse(BaseModel):
     products: list[ProductResponse]
 
 
-def extract_product_data(products: list[dict]) -> list[dict]:
-    return products
-
 def extract_text(content) -> str:
     if isinstance(content, str):
         return content
@@ -79,9 +74,17 @@ async def health():
 async def chat(request: ChatRequest):
     result = await buyer_graph.ainvoke(
         {
-            "messages": [
-                HumanMessage(content=request.message)
-            ],
+            "goal": request.message,
+            "scenario": "budget_search",
+            "parsed_filters": None,
+            "candidates": [],
+            "chosen_product": None,
+            "upsell_offer": None,
+            "budget_ceiling": 0.0,
+            "order_status": "not_started",
+            "order_id": None,
+            "decision_log": [],
+            "failure_reason": None,
         },
         config={
             "configurable": {
@@ -89,17 +92,26 @@ async def chat(request: ChatRequest):
             }
         },
     )
-    print("\n=== FINAL GRAPH STATE ===")
-    print("PRODUCT COUNT:", len(result.get("products", [])))
-    print(
-        "PRODUCTS:",
-        [p.get("name") for p in result.get("products", [])]
-    )
-    print("FILTERS:", result.get("active_filters"))
-    print("=========================\n")
-    final_message = result["messages"][-1]
+
+    chosen_product = result.get("chosen_product")
+
+    if chosen_product:
+        response = (
+            f"I recommend **{chosen_product['name']}** "
+            f"at ₹{float(chosen_product['price']):,.2f}."
+        )
+    else:
+        response = (
+            "I couldn't find a suitable product "
+            "for your request."
+        )
+
+    products = []
+
+    if chosen_product:
+        products.append(chosen_product)
 
     return ChatResponse(
-        response=extract_text(final_message.content),
-        products=extract_product_data(result["products"]),
+        response=response,
+        products=products,
     )

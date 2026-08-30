@@ -56,6 +56,7 @@ async def compare_options(state: AgentState) -> dict:
 
         return {
             "chosen_product": None,
+            "confidence": 0.0,
             "decision_log": [
                 *state["decision_log"],
                 log_entry,
@@ -143,6 +144,7 @@ Rules:
 
     return {
         "chosen_product": chosen_product,
+        "confidence": confidence,
         "decision_log": [
             *state["decision_log"],
             log_entry,

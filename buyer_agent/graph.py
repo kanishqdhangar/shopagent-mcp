@@ -1,72 +1,21 @@
-from typing import Any, Annotated, TypedDict
+from typing import Any
 
 from langgraph.checkpoint.redis import AsyncRedisSaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
 
-from nodes.buyer_node import buyer_node
-from tools.mcp_tools import MCP_TOOLS
-from nodes.tool_result_node import extract_products
-from nodes.followup_filter_node import followup_filter_node
+from state import AgentState
+from nodes.parse_intent import parse_intent
+from nodes.rag_search import rag_search
+from nodes.compare_options import compare_options
+from nodes.check_upsell import check_upsell
 
+def route_on_confidence(state: AgentState):
+    confidence = state.get("confidence", 0.0)
 
+    if confidence < 0.5:
+        return "retry"
 
-class BuyerState(TypedDict, total=False):
-    messages: Annotated[list, add_messages]
-    products: list[dict[str, Any]]
-    active_filters: dict[str, Any]
-
-def should_continue(state: BuyerState):
-    last_message = state["messages"][-1]
-
-    if last_message.tool_calls:
-        return "tools"
-
-    return END
-
-
-def should_use_previous_products(state: BuyerState):
-    products = state.get("products", [])
-
-    if not products:
-        return "buyer_agent"
-
-    last_user_message = ""
-
-    for message in reversed(state["messages"]):
-        if getattr(message, "type", None) == "human":
-            last_user_message = message.content.lower()
-            break
-
-    followup_phrases = [
-        "cheaper",
-        "cheapest",
-        "more expensive",
-        "most expensive",
-        "black ones",
-        "white ones",
-        "grey ones",
-        "gray ones",
-        "blue ones",
-        "red ones",
-        "green ones",
-        "only show",
-        "what about",
-        "uk 6",
-        "uk 7",
-        "uk 8",
-        "uk 9",
-        "uk 10",
-    ]
-
-    if any(
-        phrase in last_user_message
-        for phrase in followup_phrases
-    ):
-        return "followup_filter"
-
-    return "buyer_agent"
+    return "proceed"
 
 
 async def build_buyer_graph():
@@ -76,59 +25,55 @@ async def build_buyer_graph():
 
     await checkpointer.asetup()
 
-    builder = StateGraph(BuyerState)
+    builder = StateGraph(AgentState)
 
     builder.add_node(
-        "buyer_agent",
-        buyer_node,
+        "parse_intent",
+        parse_intent,
     )
 
     builder.add_node(
-        "tools",
-        ToolNode(MCP_TOOLS),
+        "rag_search",
+        rag_search,
     )
 
     builder.add_node(
-        "extract_products",
-        extract_products,
+        "compare_options",
+        compare_options,
     )
 
     builder.add_node(
-        "followup_filter",
-        followup_filter_node,
+        "check_upsell",
+        check_upsell,
     )
 
-    builder.add_conditional_edges(
+    builder.add_edge(
         START,
-        should_use_previous_products,
-        {
-            "followup_filter": "followup_filter",
-            "buyer_agent": "buyer_agent",
-        },
+        "parse_intent",
     )
 
     builder.add_edge(
-        "followup_filter",
-        "buyer_agent",
+        "parse_intent",
+        "rag_search",
     )
 
+    builder.add_edge(
+        "rag_search",
+        "compare_options",
+    )
+
+    builder.add_edge(
+        "check_upsell",
+        END,
+    )
+    
     builder.add_conditional_edges(
-        "buyer_agent",
-        should_continue,
+        "compare_options",
+        route_on_confidence,
         {
-            "tools": "tools",
-            END: END,
+            "retry": "parse_intent",
+            "proceed": "check_upsell",
         },
-    )
-
-    builder.add_edge(
-        "tools",
-        "extract_products",
-    )
-
-    builder.add_edge(
-        "extract_products",
-        "buyer_agent",
     )
 
     return builder.compile(
