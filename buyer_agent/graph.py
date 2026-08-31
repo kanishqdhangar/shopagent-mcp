@@ -1,5 +1,3 @@
-from typing import Any
-
 from langgraph.checkpoint.redis import AsyncRedisSaver
 from langgraph.graph import END, START, StateGraph
 
@@ -8,6 +6,8 @@ from nodes.parse_intent import parse_intent
 from nodes.rag_search import rag_search
 from nodes.compare_options import compare_options
 from nodes.check_upsell import check_upsell
+from nodes.budget_guardrail import budget_guardrail
+
 
 def route_on_confidence(state: AgentState):
     confidence = state.get("confidence", 0.0)
@@ -47,6 +47,11 @@ async def build_buyer_graph():
         check_upsell,
     )
 
+    builder.add_node(
+        "budget_guardrail",
+        budget_guardrail,
+    )
+
     builder.add_edge(
         START,
         "parse_intent",
@@ -62,11 +67,6 @@ async def build_buyer_graph():
         "compare_options",
     )
 
-    builder.add_edge(
-        "check_upsell",
-        END,
-    )
-    
     builder.add_conditional_edges(
         "compare_options",
         route_on_confidence,
@@ -74,6 +74,16 @@ async def build_buyer_graph():
             "retry": "parse_intent",
             "proceed": "check_upsell",
         },
+    )
+
+    builder.add_edge(
+        "check_upsell",
+        "budget_guardrail",
+    )
+
+    builder.add_edge(
+        "budget_guardrail",
+        END,
     )
 
     return builder.compile(

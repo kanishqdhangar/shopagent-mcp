@@ -47,6 +47,12 @@ async def main():
 
     print("\nCONFIDENCE:")
     print(result.get("confidence"))
+
+    print("\nUPSELL OFFER:")
+    print(result.get("upsell_offer"))
+
+    print("\nBUDGET CEILING:")
+    print(result.get("budget_ceiling"))
     
     print("\nFAILURE:")
     print(result["failure_reason"])
