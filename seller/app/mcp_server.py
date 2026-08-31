@@ -5,6 +5,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from app.db import AsyncSessionLocal
 from app.schemas import ProductResponse
 from app.services.embedding_service import embedding_service
+from app.services.discount_service import apply_discount as apply_discount_service
 
 from uuid import UUID
 
@@ -136,3 +137,31 @@ async def check_inventory(
         "stock_qty": product.stock_qty,
         "in_stock": product.stock_qty > 0,
     }
+
+@mcp.tool()
+async def apply_discount(
+    product_id: str,
+    percent: float,
+) -> dict:
+    """
+    Apply a discount to a product price.
+
+    Args:
+        product_id: UUID of the product.
+        percent: Discount percentage to apply.
+    """
+
+    try:
+        parsed_product_id = UUID(product_id)
+    except ValueError:
+        return {
+            "applied": False,
+            "reason": "Invalid product_id.",
+        }
+
+    async with AsyncSessionLocal() as db:
+        return await apply_discount_service(
+            db,
+            parsed_product_id,
+            percent,
+        )
