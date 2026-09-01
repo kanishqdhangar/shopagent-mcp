@@ -1,6 +1,6 @@
 from uuid import UUID
 from mcp.server.transport_security import TransportSecuritySettings
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,12 @@ from app.services.product_service import (
 from pydantic import BaseModel
 from app.services.embedding_service import embedding_service
 from app.services.product_embedding import product_to_embedding_text
+
+import razorpay
+
+
+from app.config import settings
+from app.services.order_service import mark_order_paid
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -167,6 +173,115 @@ async def search_products_endpoint(
             for product, distance in results
         ],
     }
+
+@app.post("/webhooks/razorpay")
+async def razorpay_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    body = await request.body()
+
+    signature = request.headers.get(
+        "X-Razorpay-Signature"
+    )
+
+    if not signature:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing Razorpay signature.",
+        )
+
+    if not settings.razorpay_webhook_secret:
+        raise HTTPException(
+            status_code=500,
+            detail="Razorpay webhook secret is not configured.",
+        )
+
+    client = razorpay.Client(
+        auth=(
+            settings.razorpay_key_id,
+            settings.razorpay_key_secret,
+        )
+    )
+
+    try:
+        client.utility.verify_webhook_signature(
+            body.decode("utf-8"),
+            signature,
+            settings.razorpay_webhook_secret,
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Razorpay webhook signature.",
+        )
+
+    payload = await request.json()
+
+    event = payload.get("event")
+
+    if event not in {
+        "payment.captured",
+        "order.paid",
+    }:
+        return {
+            "received": True,
+            "processed": False,
+            "event": event,
+        }
+
+    if event == "payment.captured":
+        payment_entity = (
+            payload
+            .get("payload", {})
+            .get("payment", {})
+            .get("entity", {})
+        )
+
+        razorpay_order_id = payment_entity.get(
+            "order_id"
+        )
+
+    else:
+        payment_entity = (
+            payload
+            .get("payload", {})
+            .get("payment", {})
+            .get("entity", {})
+        )
+
+        razorpay_order_id = payment_entity.get(
+            "order_id"
+        )
+
+    if not razorpay_order_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Razorpay order ID missing from webhook.",
+        )
+
+    result = await mark_order_paid(
+        db,
+        razorpay_order_id,
+    )
+
+    if not result.get("updated") and not result.get(
+        "already_paid"
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail=result.get(
+                "reason",
+                "Order not found.",
+            ),
+        )
+
+    return {
+        "received": True,
+        "processed": result.get("updated", False),
+        **result,
+    }
+
 
 app.mount(
     "/mcp",

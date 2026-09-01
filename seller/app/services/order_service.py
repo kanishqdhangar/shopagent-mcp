@@ -149,3 +149,52 @@ async def create_order(
         "currency": "INR",
         "razorpay_amount": razorpay_amount,
     }
+
+
+async def mark_order_paid(
+    db: AsyncSession,
+    razorpay_order_id: str,
+) -> dict:
+    result = await db.execute(
+        select(Order).where(
+            Order.razorpay_order_id == razorpay_order_id
+        )
+    )
+
+    order = result.scalar_one_or_none()
+
+    if order is None:
+        return {
+            "updated": False,
+            "reason": "Order not found.",
+        }
+
+    # Idempotency:
+    # If Razorpay sends the same successful event again,
+    # don't process it twice.
+    if order.status == "paid":
+        return {
+            "updated": False,
+            "already_paid": True,
+            "order_id": str(order.id),
+            "razorpay_order_id": order.razorpay_order_id,
+            "status": order.status,
+        }
+
+    order.status = "paid"
+
+    from datetime import datetime, timezone
+
+    order.confirmed_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    await db.refresh(order)
+
+    return {
+        "updated": True,
+        "already_paid": False,
+        "order_id": str(order.id),
+        "razorpay_order_id": order.razorpay_order_id,
+        "status": order.status,
+        "confirmed_at": order.confirmed_at.isoformat(),
+    }
