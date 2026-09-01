@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import select, desc
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Product
@@ -114,3 +114,24 @@ async def search_products(
         (product, float(distance))
         for product, distance in rows
     ]
+
+async def decrement_inventory(
+    db: AsyncSession,
+    product_id: UUID,
+    quantity: int,
+) -> bool:
+    if quantity <= 0:
+        return False
+
+    result = await db.execute(
+        update(Product)
+        .where(
+            Product.id == product_id,
+            Product.stock_qty >= quantity,
+        )
+        .values(
+            stock_qty=Product.stock_qty - quantity
+        )
+    )
+
+    return result.rowcount == 1

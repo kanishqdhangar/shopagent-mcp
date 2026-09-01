@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import Order, Product
 
+from app.services.product_service import decrement_inventory
 
 async def create_order(
     db: AsyncSession,
@@ -170,8 +171,8 @@ async def mark_order_paid(
         }
 
     # Idempotency:
-    # If Razorpay sends the same successful event again,
-    # don't process it twice.
+    # A duplicate successful webhook must not
+    # deduct inventory again.
     if order.status == "paid":
         return {
             "updated": False,
@@ -181,10 +182,69 @@ async def mark_order_paid(
             "status": order.status,
         }
 
-    order.status = "paid"
+    cart = order.cart_json
+
+    if not isinstance(cart, list):
+        await db.rollback()
+
+        return {
+            "updated": False,
+            "reason": "Invalid order cart.",
+        }
+
+    # Deduct inventory for every item in the order.
+    for item in cart:
+        product_id = item.get("product_id")
+        quantity = item.get("quantity", 1)
+
+        if not product_id:
+            await db.rollback()
+
+            return {
+                "updated": False,
+                "reason": "Cart item is missing product_id.",
+            }
+
+        try:
+            parsed_product_id = UUID(str(product_id))
+        except ValueError:
+            await db.rollback()
+
+            return {
+                "updated": False,
+                "reason": f"Invalid product_id: {product_id}.",
+            }
+
+        if not isinstance(quantity, int) or quantity <= 0:
+            await db.rollback()
+
+            return {
+                "updated": False,
+                "reason": (
+                    f"Invalid quantity for product {product_id}."
+                ),
+            }
+
+        inventory_updated = await decrement_inventory(
+            db,
+            parsed_product_id,
+            quantity,
+        )
+
+        if not inventory_updated:
+            await db.rollback()
+
+            return {
+                "updated": False,
+                "reason": (
+                    f"Insufficient stock while confirming "
+                    f"order for product {product_id}."
+                ),
+            }
 
     from datetime import datetime, timezone
 
+    order.status = "paid"
     order.confirmed_at = datetime.now(timezone.utc)
 
     await db.commit()
