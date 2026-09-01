@@ -8,8 +8,8 @@ from app.services.embedding_service import embedding_service
 from app.services.discount_service import apply_discount as apply_discount_service
 from app.services.order_service import (
     create_order as create_order_service,
+    get_order as get_order_service,
 )
-
 from uuid import UUID
 
 from app.services.product_service import (search_products, check_inventory as check_inventory_service,
@@ -186,3 +186,36 @@ async def create_order(
             db,
             items,
         )
+
+@mcp.tool()
+async def get_order_status(
+    order_id: str,
+) -> dict:
+    """
+    Get the current status of a ShopAgent order.
+
+    Args:
+        order_id: ShopAgent order UUID.
+    """
+
+    try:
+        parsed_order_id = UUID(order_id)
+    except ValueError:
+        return {
+            "error": "Invalid order_id",
+            "order_id": order_id,
+        }
+
+    async with AsyncSessionLocal() as db:
+        order = await get_order_service(
+            db,
+            parsed_order_id,
+        )
+
+    if order is None:
+        return {
+            "error": "Order not found",
+            "order_id": order_id,
+        }
+
+    return order

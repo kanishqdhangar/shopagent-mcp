@@ -8,7 +8,7 @@ import httpx
 from config import settings
 
 
-RAZORPAY_ORDER_ID = "order_TWrRKRGQrolxYP"
+RAZORPAY_ORDER_ID = "order_TWsQCvrUw2pLJO"
 
 
 async def main():

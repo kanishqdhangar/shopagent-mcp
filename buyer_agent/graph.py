@@ -7,7 +7,8 @@ from nodes.rag_search import rag_search
 from nodes.compare_options import compare_options
 from nodes.check_upsell import check_upsell
 from nodes.budget_guardrail import budget_guardrail
-
+from nodes.checkout import checkout
+from nodes.confirm import confirm
 
 def route_on_confidence(state: AgentState):
     confidence = state.get("confidence", 0.0)
@@ -52,6 +53,13 @@ async def build_buyer_graph():
         budget_guardrail,
     )
 
+    builder.add_node(
+        "checkout",
+        checkout,
+    )
+
+    builder.add_node("confirm", confirm)
+
     builder.add_edge(
         START,
         "parse_intent",
@@ -81,10 +89,9 @@ async def build_buyer_graph():
         "budget_guardrail",
     )
 
-    builder.add_edge(
-        "budget_guardrail",
-        END,
-    )
+    builder.add_edge("budget_guardrail", "checkout")
+    builder.add_edge("checkout", "confirm")
+    builder.add_edge("confirm", END)
 
     return builder.compile(
         checkpointer=checkpointer,

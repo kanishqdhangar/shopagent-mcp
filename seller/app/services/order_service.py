@@ -151,6 +151,36 @@ async def create_order(
         "razorpay_amount": razorpay_amount,
     }
 
+async def get_order(
+    db: AsyncSession,
+    order_id: UUID,
+) -> dict | None:
+    result = await db.execute(
+        select(Order).where(
+            Order.id == order_id
+        )
+    )
+
+    order = result.scalar_one_or_none()
+
+    if order is None:
+        return None
+
+    return {
+        "order_id": str(order.id),
+        "razorpay_order_id": order.razorpay_order_id,
+        "status": order.status,
+        "total_amount": float(order.total_amount),
+        "created_at": order.created_at.isoformat()
+        if order.created_at
+        else None,
+        "confirmed_at": (
+            order.confirmed_at.isoformat()
+            if order.confirmed_at
+            else None
+        ),
+    }
+
 
 async def mark_order_paid(
     db: AsyncSession,

@@ -81,6 +81,37 @@ async def check_inventory(
         },
     )
 
+async def apply_discount(
+    product_id: str,
+    percent: float,
+) -> dict[str, Any]:
+    return await _call_mcp_tool(
+        "apply_discount",
+        {
+            "product_id": product_id,
+            "percent": percent,
+        },
+    )
+
+async def create_order(
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return await _call_mcp_tool(
+        "create_order",
+        {
+            "items": items,
+        },
+    )
+
+async def get_order_status(
+    order_id: str,
+) -> dict[str, Any]:
+    return await _call_mcp_tool(
+        "get_order_status",
+        {
+            "order_id": order_id,
+        },
+    )
 
 search_catalog_tool = StructuredTool.from_function(
     coroutine=search_catalog,
@@ -115,9 +146,40 @@ check_inventory_tool = StructuredTool.from_function(
     ),
 )
 
+apply_discount_tool = StructuredTool.from_function(
+    coroutine=apply_discount,
+    name="apply_discount",
+    description=(
+        "Apply a discount to a product. "
+        "The seller enforces the maximum allowed discount. "
+        "Use this only when a discount is appropriate."
+    ),
+)
+
+create_order_tool = StructuredTool.from_function(
+    coroutine=create_order,
+    name="create_order",
+    description=(
+        "Create a ShopAgent order after validating "
+        "products and inventory. "
+        "Each item must contain product_id and quantity."
+    ),
+)
+
+get_order_status_tool = StructuredTool.from_function(
+    coroutine=get_order_status,
+    name="get_order_status",
+    description=(
+        "Get the current status of a ShopAgent order. "
+        "Use this to check whether an order has been paid."
+    ),
+)
 
 MCP_TOOLS = [
     search_catalog_tool,
     get_product_tool,
     check_inventory_tool,
+    apply_discount_tool,
+    create_order_tool,
+    get_order_status_tool,
 ]
