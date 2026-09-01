@@ -6,6 +6,9 @@ from app.db import AsyncSessionLocal
 from app.schemas import ProductResponse
 from app.services.embedding_service import embedding_service
 from app.services.discount_service import apply_discount as apply_discount_service
+from app.services.order_service import (
+    create_order as create_order_service,
+)
 
 from uuid import UUID
 
@@ -164,4 +167,22 @@ async def apply_discount(
             db,
             parsed_product_id,
             percent,
+        )
+
+@mcp.tool()
+async def create_order(
+    items: list[dict],
+) -> dict:
+    """
+    Create an order after validating products and inventory.
+
+    Args:
+        items: List of cart items. Each item must contain
+               product_id and quantity.
+    """
+
+    async with AsyncSessionLocal() as db:
+        return await create_order_service(
+            db,
+            items,
         )
