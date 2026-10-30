@@ -10,6 +10,7 @@ async def main():
         {
             "goal": "Find me a lightweight running shoe under ₹3000.",
             "scenario": "budget_search",
+            "retry_count": 0,
             "parsed_filters": None,
             "candidates": [],
             "chosen_product": None,
@@ -53,7 +54,10 @@ async def main():
 
     print("\nBUDGET CEILING:")
     print(result.get("budget_ceiling"))
-    
+
+    print("\nRETRY COUNT:")
+    print(result.get("retry_count", 0))
+
     print("\nFAILURE:")
     print(result["failure_reason"])
 

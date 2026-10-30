@@ -31,7 +31,8 @@ class AgentState(TypedDict):
     chosen_product: Optional[dict]
     upsell_offer: Optional[dict]
     confidence: float
-    
+
+    retry_count: int
     budget_ceiling: float
 
     order_status: str

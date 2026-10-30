@@ -71,7 +71,7 @@ async def parse_intent(state: AgentState) -> dict:
 
     goal = state["goal"]
     scenario = state["scenario"]
-
+    retry_count = state.get("retry_count", 0) + 1
     system_prompt = """
 You are the intent parser for ShopAgent.
 
@@ -151,6 +151,7 @@ subtype = "socks"
     return {
         "parsed_filters": parsed_filters,
         "budget_ceiling": parsed.budget or 0.0,
+        "retry_count": retry_count,
         "decision_log": [
             *state["decision_log"],
             log_entry,
