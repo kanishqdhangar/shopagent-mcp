@@ -13,7 +13,7 @@ from app.services.order_service import (
 from uuid import UUID
 
 from app.services.product_service import (search_products, check_inventory as check_inventory_service,
-    get_product as get_product_service)
+    get_product as get_product_service, find_products_by_name)
 mcp = MCPServer(
     "ShopAgent Seller",
 )
@@ -103,6 +103,32 @@ async def get_product(
         "product": ProductResponse.model_validate(
             product
         ).model_dump(mode="json")
+    }
+
+@mcp.tool()
+async def find_products_by_name_tool(
+    product_names: list[str],
+) -> dict:
+    """
+    Find products by their exact names, including out-of-stock products.
+
+    Args:
+        product_names: List of product names to find.
+    """
+
+    async with AsyncSessionLocal() as db:
+        products = await find_products_by_name(
+            db,
+            product_names,
+        )
+
+    return {
+        "results": [
+            ProductResponse.model_validate(product).model_dump(
+                mode="json"
+            )
+            for product in products
+        ]
     }
 
 @mcp.tool()

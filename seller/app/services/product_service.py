@@ -2,6 +2,7 @@ from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func
 
 from app.models import Product
 from app.schemas import ProductCreate
@@ -135,3 +136,26 @@ async def decrement_inventory(
     )
 
     return result.rowcount == 1
+
+async def find_products_by_name(
+    db: AsyncSession,
+    product_names: list[str],
+) -> list[Product]:
+    normalized_names = [
+        name.strip().lower()
+        for name in product_names
+        if name and name.strip()
+    ]
+
+    if not normalized_names:
+        return []
+
+    result = await db.execute(
+        select(Product)
+        .where(
+            func.lower(Product.name).in_(normalized_names)
+        )
+        .order_by(Product.name)
+    )
+
+    return list(result.scalars().all())

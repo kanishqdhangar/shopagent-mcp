@@ -1,14 +1,8 @@
 import asyncio
-import hashlib
-import hmac
-import json
-
 import httpx
 
-from config import settings
 
-
-RAZORPAY_ORDER_ID = "order_TWsQCvrUw2pLJO"
+WEBHOOK_URL = "http://seller:8000/webhooks/razorpay"
 
 
 async def main():
@@ -17,8 +11,8 @@ async def main():
         "payload": {
             "payment": {
                 "entity": {
-                    "id": "pay_test_shopagent_001",
-                    "order_id": RAZORPAY_ORDER_ID,
+                    "id": "pay_invalid_signature_test",
+                    "order_id": "order_invalid_test",
                     "amount": 289900,
                     "currency": "INR",
                     "status": "captured",
@@ -27,32 +21,36 @@ async def main():
         },
     }
 
-    body = json.dumps(
-        payload,
-        separators=(",", ":"),
-    )
-
-    signature = hmac.new(
-        settings.razorpay_webhook_secret.encode(),
-        body.encode(),
-        hashlib.sha256,
-    ).hexdigest()
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-Razorpay-Signature": signature,
-    }
-
     async with httpx.AsyncClient() as client:
+
+        # Test 1: Invalid signature
         response = await client.post(
-            "http://seller:8000/webhooks/razorpay",
-            content=body,
-            headers=headers,
+            WEBHOOK_URL,
+            json=payload,
+            headers={
+                "X-Razorpay-Signature": "invalid-signature"
+            },
         )
 
-    print("\n=== WEBHOOK RESPONSE ===")
-    print("STATUS:", response.status_code)
-    print(response.text)
+        print("\n=== INVALID SIGNATURE TEST ===")
+        print("Status:", response.status_code)
+        print("Response:", response.text)
+
+        assert response.status_code == 400
+
+        # Test 2: Missing signature
+        response = await client.post(
+            WEBHOOK_URL,
+            json=payload,
+        )
+
+        print("\n=== MISSING SIGNATURE TEST ===")
+        print("Status:", response.status_code)
+        print("Response:", response.text)
+
+        assert response.status_code == 400
+
+    print("\nPASS: Both invalid and missing signature tests passed.")
 
 
 if __name__ == "__main__":

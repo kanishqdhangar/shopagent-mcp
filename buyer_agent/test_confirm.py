@@ -18,7 +18,7 @@ async def main():
         # IMPORTANT:
         # Replace this with an actual order ID
         # that currently has status "created".
-        "order_id": "e719119f-c106-47c7-8eb0-1a7a5601718b",
+        "order_id": "a0330cdc-2e4d-4029-a3b8-beb093286188",
 
         "decision_log": [],
         "failure_reason": None,

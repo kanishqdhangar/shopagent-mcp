@@ -69,12 +69,15 @@ async def create_order(
         if product.stock_qty < quantity:
             return {
                 "created": False,
+                "error_code": "INSUFFICIENT_STOCK",
                 "reason": (
                     f"Insufficient stock for "
                     f"{product.name}. "
                     f"Requested {quantity}, "
                     f"available {product.stock_qty}."
                 ),
+                "product_id": str(product.id),
+                "available_stock": product.stock_qty,
             }
 
         line_total = (

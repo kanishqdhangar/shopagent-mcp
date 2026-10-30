@@ -60,6 +60,20 @@ async def search_catalog(
         "results": filtered_results,
     }
 
+
+async def find_products_by_name(
+    product_names: list[str],
+) -> dict[str, Any]:
+    """
+    Find products by exact names, including out-of-stock products.
+    """
+    return await _call_mcp_tool(
+        "find_products_by_name_tool",
+        {
+            "product_names": product_names,
+        },
+    )
+
 async def get_product(
     product_id: str,
 ) -> dict[str, Any]:
@@ -128,6 +142,18 @@ search_catalog_tool = StructuredTool.from_function(
     ),
 )
 
+
+find_products_by_name_tool = StructuredTool.from_function(
+    coroutine=find_products_by_name,
+    name="find_products_by_name",
+    description=(
+        "Find products by their exact names in the ShopAgent catalog. "
+        "Includes products that are currently out of stock. "
+        "Use this when the user explicitly names products to compare."
+    ),
+)
+
+
 get_product_tool = StructuredTool.from_function(
     coroutine=get_product,
     name="get_product",
@@ -177,6 +203,7 @@ get_order_status_tool = StructuredTool.from_function(
 
 MCP_TOOLS = [
     search_catalog_tool,
+    find_products_by_name_tool,
     get_product_tool,
     check_inventory_tool,
     apply_discount_tool,

@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
-sqlalchemy
+sqlalchemy[asyncio]
+greenlet>=3.0
 asyncpg
 alembic
 pydantic
