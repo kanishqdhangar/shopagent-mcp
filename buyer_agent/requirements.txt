@@ -5,7 +5,7 @@ google-genai
 mcp
 pydantic
 pydantic-settings
-sqlalchemy
+sqlalchemy[asyncio]
 asyncpg
 redis
 celery

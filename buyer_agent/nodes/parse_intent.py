@@ -1,4 +1,6 @@
 import time
+import re
+from audit import write_audit_log
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -11,7 +13,7 @@ from state import AgentState, DecisionLogEntry
 class IntentResult(BaseModel):
     intent_type: str = Field(
         description=(
-            "One of: search, compare, restock"
+            "One of: search, compare, purchase, restock"
         )
     )
 
@@ -54,6 +56,12 @@ class IntentResult(BaseModel):
         )
     )
 
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Confidence in the extracted intent and filters."
+    )
+
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.5-flash-lite",
@@ -65,6 +73,31 @@ structured_llm = llm.with_structured_output(
     include_raw=True,
 )
 
+def detect_explicit_purchase_intent(goal: str) -> bool:
+    normalized = goal.strip().lower()
+
+    purchase_patterns = [
+        r"^buy\b",
+        r"^purchase\b",
+        r"^order\b",
+        r"^i want to buy\b",
+        r"^i want to purchase\b",
+        r"^i would like to buy\b",
+        r"^i would like to purchase\b",
+        r"^please buy\b",
+        r"^please purchase\b",
+        r"^go ahead and buy\b",
+        r"^go ahead and purchase\b",
+    ]
+
+    # Questions asking whether to buy are not purchase authorization.
+    if normalized.endswith("?"):
+        return False
+
+    return any(
+        re.search(pattern, normalized)
+        for pattern in purchase_patterns
+    )
 
 async def parse_intent(state: AgentState) -> dict:
     started_at = time.perf_counter()
@@ -92,16 +125,21 @@ subtype = "shoes"
 category = "running"
 subtype = "socks"
 
-4. intent_type must be:
-   - search
-   - compare
-   - restock
+4. intent_type must be exactly one of:
+   - search: The user wants to discover, find, browse, or get recommendations.
+   - compare: The user wants to compare products or evaluate alternatives.
+   - purchase: The user explicitly wants to buy, order, or purchase a product.
+   - restock: The user explicitly wants to reorder or restock a product.
 
-5. For comparison requests, preserve explicitly mentioned product names.
-6. For restock/reorder requests, use intent_type="restock".
-7. search_query should contain the semantic requirements useful for
+5. A search or comparison request must NEVER be classified as purchase.
+6. Mentioning a product, budget, or preferred product does not imply
+   permission to purchase.
+7. For comparison requests, preserve explicitly mentioned product names.
+8. For restock/reorder requests, use intent_type="restock".
+9. search_query should contain the semantic requirements useful for
    catalog retrieval.
-8. Do not make a purchase decision here.
+10. Do not make a purchase decision here.
+11. When intent is ambiguous, classify it as search, not purchase.
 """
 
     response = await structured_llm.ainvoke(
@@ -119,6 +157,10 @@ subtype = "socks"
     parsed: IntentResult = response["parsed"]
     raw = response["raw"]
 
+    intent_type = parsed.intent_type
+
+    if detect_explicit_purchase_intent(goal):
+        intent_type = "purchase"
     latency_ms = int(
         (time.perf_counter() - started_at) * 1000
     )
@@ -129,7 +171,7 @@ subtype = "socks"
     )
 
     parsed_filters = {
-        "intent_type": parsed.intent_type,
+        "intent_type": intent_type,
         "category": parsed.category,
         "subtype": parsed.subtype,
         "budget": parsed.budget,
@@ -141,9 +183,18 @@ subtype = "socks"
         step="parse_intent",
         decision=(
             f"Parsed shopping intent as "
-            f"{parsed.intent_type}"
+            f"{intent_type}"
         ),
         reason=parsed.reason,
+        tokens_used=tokens_used,
+        latency_ms=latency_ms,
+    )
+
+    await write_audit_log(
+        run_id=state["run_id"],
+        node_name="parse_intent",
+        decision=log_entry.decision,
+        reasoning=log_entry.reason,
         tokens_used=tokens_used,
         latency_ms=latency_ms,
     )
@@ -151,6 +202,7 @@ subtype = "socks"
     return {
         "parsed_filters": parsed_filters,
         "budget_ceiling": parsed.budget,
+        "confidence": parsed.confidence,
         "retry_count": retry_count,
         "decision_log": [
             *state["decision_log"],

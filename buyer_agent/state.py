@@ -22,6 +22,7 @@ class ParsedFilters(BaseModel):
 
 
 class AgentState(TypedDict):
+    run_id: str
     goal: str
     scenario: str
 

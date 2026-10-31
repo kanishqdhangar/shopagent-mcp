@@ -1,5 +1,6 @@
 
 import time
+from audit import write_audit_log
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -174,6 +175,16 @@ Rules:
         step="check_upsell",
         decision=decision,
         reason=parsed.reason,
+        tokens_used=tokens_used,
+        latency_ms=latency_ms,
+    )
+
+    # Persist LLM decision in PostgreSQL
+    await write_audit_log(
+        run_id=state["run_id"],
+        node_name="check_upsell",
+        decision=decision,
+        reasoning=parsed.reason,
         tokens_used=tokens_used,
         latency_ms=latency_ms,
     )

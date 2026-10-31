@@ -20,13 +20,21 @@ def route_on_confidence(state: AgentState):
     confidence = state.get("confidence", 0.0)
     retry_count = state.get("retry_count", 0)
 
-    if confidence >= CONFIDENCE_THRESHOLD:
-        return "proceed"
+    if confidence < CONFIDENCE_THRESHOLD:
+        if retry_count <= MAX_CONFIDENCE_RETRIES:
+            return "retry"
 
-    if retry_count <= MAX_CONFIDENCE_RETRIES:
-        return "retry"
+        return "failed"
 
-    return "failed"
+    parsed_filters = state.get("parsed_filters") or {}
+    intent_type = parsed_filters.get("intent_type", "search")
+
+    # Only explicit purchase and restock requests can reach checkout.
+    if intent_type in ("purchase", "restock"):
+        return "purchase"
+
+    # Search, comparison, and unknown intents never reach checkout.
+    return "display"
 
 def route_on_failure(state: AgentState):
     failure_reason = state.get("failure_reason")
@@ -160,7 +168,8 @@ async def build_buyer_graph():
         route_on_confidence,
         {
             "retry": "parse_intent",
-            "proceed": "check_upsell",
+            "purchase": "check_upsell",
+            "display": END,
             "failed": "handle_low_confidence",
         },
     )

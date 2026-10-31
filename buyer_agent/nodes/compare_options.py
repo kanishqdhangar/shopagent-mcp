@@ -1,5 +1,6 @@
 import time
 
+from audit import write_audit_log
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
@@ -179,6 +180,16 @@ Rules:
         step="compare_options",
         decision=decision,
         reason=reason,
+        tokens_used=tokens_used,
+        latency_ms=latency_ms,
+    )
+
+    # Persist LLM decision in PostgreSQL
+    await write_audit_log(
+        run_id=state["run_id"],
+        node_name="compare_options",
+        decision=decision,
+        reasoning=reason,
         tokens_used=tokens_used,
         latency_ms=latency_ms,
     )

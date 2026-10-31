@@ -72,7 +72,53 @@ async def rag_search(state: AgentState) -> dict[str, Any]:
                 if item.get("product")
             ]
 
-    
+    # --------------------------------------------------
+    # 2. Explicit purchase
+    # --------------------------------------------------
+    elif intent_type == "purchase":
+        product_names = parsed_filters.get("product_names") or []
+
+        if product_names:
+            result = await find_products_by_name(
+                product_names=product_names,
+            )
+
+            candidates = [
+                item
+                for item in result.get("results", [])
+                if item
+            ]
+
+            name_lookup = {
+                item.get("name", "").strip().lower(): item
+                for item in candidates
+            }
+
+            ordered_candidates = []
+
+            for name in product_names:
+                product = name_lookup.get(name.strip().lower())
+
+                if product:
+                    ordered_candidates.append(product)
+
+            candidates = ordered_candidates
+
+        else:
+            result = await search_catalog(
+                query=query,
+                limit=5,
+                max_price=max_price,
+                require_in_stock=True,
+                category=category,
+                subtype=subtype,
+            )
+
+            candidates = [
+                item["product"]
+                for item in result.get("results", [])
+                if item.get("product")
+            ]
     # --------------------------------------------------
     # 2. Restock / reorder
     # --------------------------------------------------

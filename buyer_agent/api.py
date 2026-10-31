@@ -1,4 +1,5 @@
 
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
@@ -43,6 +44,7 @@ class ConfirmationRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     session_id: str
+    intent_type: str = "search"
     products: list[dict[str, Any]] = []
     confirmation_required: bool = False
     pending_confirmation: Optional[dict[str, Any]] = None
@@ -76,6 +78,9 @@ def get_interrupt_payload(result: dict) -> Optional[dict]:
 def build_chat_response(result: dict, session_id: str) -> ChatResponse:
     interrupt_payload = get_interrupt_payload(result)
 
+    parsed_filters = result.get("parsed_filters") or {}
+    intent_type = parsed_filters.get("intent_type", "search")
+
     if interrupt_payload:
         product = interrupt_payload.get("product", {})
 
@@ -85,6 +90,7 @@ def build_chat_response(result: dict, session_id: str) -> ChatResponse:
                 "Your confirmation is required.",
             ),
             session_id=session_id,
+            intent_type=intent_type,
             products=[],
             confirmation_required=True,
             pending_confirmation=product,
@@ -97,37 +103,53 @@ def build_chat_response(result: dict, session_id: str) -> ChatResponse:
         )
 
     chosen_product = result.get("chosen_product")
-    products = [chosen_product] if chosen_product else []
+    candidates = result.get("candidates", [])
 
-    if result.get("failure_reason") == "alternative_rejected":
-        response = "You rejected the alternative. No order was placed."
+    if intent_type == "compare":
+        products = candidates
 
-    elif result.get("order_status") == "payment_pending":
-        response = (
-            "Your order has been created and is awaiting payment confirmation."
-        )
-
-    elif result.get("order_status") == "paid":
-        response = "Payment confirmed. Your order is successful."
-
-    elif result.get("failure_reason"):
-        response = (
-            f"The shopping workflow could not be completed: "
-            f"{result['failure_reason']}."
-        )
-
-    elif chosen_product:
-        response = (
-            f"I recommend **{chosen_product['name']}** "
-            f"at ₹{float(chosen_product['price']):,.2f}."
-        )
+        if chosen_product:
+            response = (
+                f"After comparing {len(products)} products, "
+                f"I recommend **{chosen_product['name']}** "
+                f"at ₹{float(chosen_product['price']):,.2f}."
+            )
+        else:
+            response = "I couldn't find suitable products to compare."
 
     else:
-        response = "I couldn't find a suitable product for your request."
+        products = [chosen_product] if chosen_product else []
+
+        if result.get("failure_reason") == "alternative_rejected":
+            response = "You rejected the alternative. No order was placed."
+
+        elif result.get("order_status") == "payment_pending":
+            response = (
+                "Your order has been created and is awaiting payment confirmation."
+            )
+
+        elif result.get("order_status") == "paid":
+            response = "Payment confirmed. Your order is successful."
+
+        elif result.get("failure_reason"):
+            response = (
+                f"The shopping workflow could not be completed: "
+                f"{result['failure_reason']}."
+            )
+
+        elif chosen_product:
+            response = (
+                f"I recommend **{chosen_product['name']}** "
+                f"at ₹{float(chosen_product['price']):,.2f}."
+            )
+
+        else:
+            response = "I couldn't find a suitable product for your request."
 
     return ChatResponse(
         response=response,
         session_id=session_id,
+        intent_type=intent_type,
         products=products,
         confirmation_required=False,
         pending_confirmation=None,
@@ -135,7 +157,6 @@ def build_chat_response(result: dict, session_id: str) -> ChatResponse:
         order_id=result.get("order_id"),
         failure_reason=result.get("failure_reason"),
     )
-
 
 # -------------------------
 # Health
@@ -165,6 +186,7 @@ async def chat(request: ChatRequest):
     }
 
     initial_state = {
+        "run_id": str(uuid.uuid4()),
         "goal": request.message,
         "scenario": "budget_search",
         "parsed_filters": None,
