@@ -45,6 +45,47 @@ async def compare_options(state: AgentState) -> dict:
 
     candidates = state.get("candidates", [])
 
+    parsed_filters = state.get("parsed_filters") or {}
+    intent_type = parsed_filters.get("intent_type", "search")
+
+    # Restock must prioritize the exact requested product.
+    if intent_type == "restock":
+        product_names = parsed_filters.get("product_names") or []
+
+        if product_names:
+            name_lookup = {
+                product.get("name", "").strip().lower(): product
+                for product in candidates
+            }
+
+            for name in product_names:
+                requested_product = name_lookup.get(name.strip().lower())
+
+                if requested_product:
+                    log_entry = DecisionLogEntry(
+                        step="compare_options",
+                        decision=f"Selected restock product: {requested_product.get('name')}",
+                        reason=(
+                            "Exact requested product selected for restocking. "
+                            "Checkout will validate inventory and request "
+                            "approval if an alternative is needed."
+                        ),
+                        tokens_used=0,
+                        latency_ms=int(
+                            (time.perf_counter() - started_at) * 1000
+                        ),
+                    )
+
+                    return {
+                        "chosen_product": requested_product,
+                        "confidence": 1.0,
+                        "decision_log": [
+                            *state.get("decision_log", []),
+                            log_entry,
+                        ],
+                        "failure_reason": None,
+                    }
+
     if not candidates:
         log_entry = DecisionLogEntry(
             step="compare_options",

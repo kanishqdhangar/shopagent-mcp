@@ -50,7 +50,7 @@ async def checkout(state: AgentState) -> dict[str, Any]:
             "Selected product is missing an ID.",
         )
 
-    budget_ceiling = float(state.get("budget_ceiling") or 0)
+    budget_ceiling = state.get("budget_ceiling")
 
     async def attempt_order(product):
         return await create_order(
@@ -62,7 +62,7 @@ async def checkout(state: AgentState) -> dict[str, Any]:
             ]
         )
 
-    # Attempt 1: Create an order for the selected product.
+    # Attempt 1: Original selected product.
     try:
         result = await attempt_order(chosen_product)
     except Exception as exc:
@@ -90,6 +90,7 @@ async def checkout(state: AgentState) -> dict[str, Any]:
             "order_status": "created",
             "order_id": order_id,
             "failure_reason": None,
+            "confirmation_status": "not_required",
             "decision_log": [*decision_log, entry],
         }
 
@@ -105,16 +106,15 @@ async def checkout(state: AgentState) -> dict[str, Any]:
             step="checkout",
             decision="Stock failure detected",
             reason=(
-                f"{chosen_product.get('name')} is no longer "
-                "available in the requested quantity. "
-                "Refreshing inventory and searching for an alternative."
+                f"{chosen_product.get('name')} is unavailable. "
+                "Searching for an in-stock alternative."
             ),
             tokens_used=0,
             latency_ms=latency(),
         )
     )
 
-    # Find an alternative from the already-filtered candidates.
+    # Find an alternative, but DO NOT order it yet.
     candidates = state.get("candidates", [])
     alternative = None
 
@@ -129,14 +129,12 @@ async def checkout(state: AgentState) -> dict[str, Any]:
 
         price = float(candidate.get("price") or 0)
 
-        if budget_ceiling > 0 and price > budget_ceiling:
+        if budget_ceiling is not None and price > float(budget_ceiling):
             continue
-
+        
         try:
             inventory = await check_inventory(str(candidate_id))
         except Exception:
-            # An inventory lookup failure must not trigger an
-            # order attempt for an unverified candidate.
             continue
 
         if inventory.get("error"):
@@ -163,56 +161,12 @@ async def checkout(state: AgentState) -> dict[str, Any]:
     decision_log.append(
         DecisionLogEntry(
             step="checkout",
-            decision="Alternative product selected",
+            decision="Alternative awaiting user confirmation",
             reason=(
-                f"Selected {alternative.get('name')} after "
-                "refreshing its inventory."
-            ),
-            tokens_used=0,
-            latency_ms=latency(),
-        )
-    )
-
-    # Attempt 2: Exactly one retry with the alternative.
-    try:
-        retry_result = await attempt_order(alternative)
-    except Exception as exc:
-        return failure(
-            "order_retry_error",
-            f"Alternative order creation raised an exception: {exc}",
-            product=alternative,
-        )
-
-    if not retry_result.get("created"):
-        reason = retry_result.get(
-            "reason",
-            "Alternative order creation failed.",
-        )
-
-        failure_reason = (
-            "insufficient_stock_after_retry"
-            if retry_result.get("error_code") == "INSUFFICIENT_STOCK"
-            else "order_retry_failed"
-        )
-
-        return failure(
-            failure_reason,
-            (
-                "The single retry failed. "
-                f"Seller response: {reason}"
-            ),
-            product=alternative,
-        )
-
-    order_id = retry_result.get("order_id")
-
-    decision_log.append(
-        DecisionLogEntry(
-            step="checkout",
-            decision="Order created after stock retry",
-            reason=(
-                f"Created order {order_id} for "
-                f"{alternative.get('name')} after one retry."
+                f"{alternative.get('name')} is available at "
+                f"₹{float(alternative.get('price') or 0):,.2f}. "
+                "No alternative order was created. "
+                "Waiting for explicit user approval."
             ),
             tokens_used=0,
             latency_ms=latency(),
@@ -220,9 +174,11 @@ async def checkout(state: AgentState) -> dict[str, Any]:
     )
 
     return {
-        "chosen_product": alternative,
-        "order_status": "created",
-        "order_id": order_id,
+        "pending_alternative": alternative,
+        "alternative_approved": False,
+        "confirmation_status": "pending",
+        "order_status": "awaiting_confirmation",
+        "order_id": None,
         "failure_reason": None,
         "decision_log": decision_log,
     }

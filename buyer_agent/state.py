@@ -33,10 +33,17 @@ class AgentState(TypedDict):
     confidence: float
 
     retry_count: int
-    budget_ceiling: float
+    budget_ceiling: Optional[float]
 
     order_status: str
     order_id: Optional[str]
 
+    # Human confirmation for alternative products
+    pending_alternative: Optional[dict]
+    alternative_approved: bool
+    confirmation_status: str
+
     decision_log: list[DecisionLogEntry]
     failure_reason: Optional[str]
+
+    

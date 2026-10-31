@@ -9,6 +9,8 @@ from nodes.check_upsell import check_upsell
 from nodes.budget_guardrail import budget_guardrail
 from nodes.checkout import checkout
 from nodes.confirm import confirm
+from nodes.confirm_alternative import confirm_alternative
+from nodes.checkout_alternative import checkout_alternative
 
 MAX_CONFIDENCE_RETRIES = 2
 CONFIDENCE_THRESHOLD = 0.5
@@ -33,6 +35,33 @@ def route_on_failure(state: AgentState):
         return "failed"
 
     return "proceed"
+
+def route_after_checkout(state: AgentState):
+    if state.get("failure_reason"):
+        return "failed"
+
+    if state.get("order_status") == "awaiting_confirmation":
+        return "needs_confirmation"
+
+    return "proceed"
+
+
+def route_after_alternative_confirmation(state: AgentState):
+    if (
+        state.get("alternative_approved") is True
+        and state.get("confirmation_status") == "approved"
+    ):
+        return "approved"
+
+    return "rejected"
+
+
+def route_after_alternative_checkout(state: AgentState):
+    if state.get("failure_reason"):
+        return "failed"
+
+    return "proceed"
+
 
 async def handle_low_confidence(state: AgentState):
     from state import DecisionLogEntry
@@ -101,6 +130,15 @@ async def build_buyer_graph():
     )
 
     builder.add_node("confirm", confirm)
+    builder.add_node(
+        "confirm_alternative",
+        confirm_alternative,
+    )
+
+    builder.add_node(
+        "checkout_alternative",
+        checkout_alternative,
+    )
 
     builder.add_edge(
         START,
@@ -144,12 +182,31 @@ async def build_buyer_graph():
     )
     builder.add_conditional_edges(
         "checkout",
-        route_on_failure,
+        route_after_checkout,
+        {
+            "failed": END,
+            "needs_confirmation": "confirm_alternative",
+            "proceed": "confirm",
+        },
+    )
+
+    builder.add_conditional_edges(
+        "confirm_alternative",
+        route_after_alternative_confirmation,
+        {
+            "approved": "checkout_alternative",
+            "rejected": END,
+        },
+    )
+    builder.add_conditional_edges(
+    "checkout_alternative",
+    route_after_alternative_checkout,
         {
             "failed": END,
             "proceed": "confirm",
         },
     )
+    
     builder.add_edge("confirm", END)
 
     return builder.compile(

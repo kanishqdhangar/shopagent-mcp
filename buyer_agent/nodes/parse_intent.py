@@ -150,7 +150,7 @@ subtype = "socks"
 
     return {
         "parsed_filters": parsed_filters,
-        "budget_ceiling": parsed.budget or 0.0,
+        "budget_ceiling": parsed.budget,
         "retry_count": retry_count,
         "decision_log": [
             *state["decision_log"],

@@ -1,3 +1,4 @@
+
 import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -39,7 +40,7 @@ async def check_upsell(state: AgentState) -> dict:
 
     chosen_product = state.get("chosen_product")
     candidates = state.get("candidates", [])
-    budget = state.get("budget_ceiling", 0.0)
+    budget = state.get("budget_ceiling")
 
     if not chosen_product:
         return {
@@ -48,8 +49,34 @@ async def check_upsell(state: AgentState) -> dict:
 
     chosen_price = float(chosen_product.get("price", 0))
 
+    # Without an explicit budget, skip upselling.
+    if budget is None:
+        log_entry = DecisionLogEntry(
+            step="check_upsell",
+            decision="Upsell skipped",
+            reason=(
+                "No explicit budget was provided. "
+                "Skipping upsell to avoid recommending "
+                "a more expensive product without a spending limit."
+            ),
+            tokens_used=0,
+            latency_ms=int(
+                (time.perf_counter() - started_at) * 1000
+            ),
+        )
+
+        return {
+            "upsell_offer": None,
+            "decision_log": [
+                *state.get("decision_log", []),
+                log_entry,
+            ],
+        }
+
+    budget = float(budget)
+
     # Only consider products more expensive than the chosen product
-    # and still within the user's budget.
+    # and within the user's explicit budget.
     upsell_candidates = [
         product
         for product in candidates
@@ -78,7 +105,7 @@ async def check_upsell(state: AgentState) -> dict:
         return {
             "upsell_offer": None,
             "decision_log": [
-                *state["decision_log"],
+                *state.get("decision_log", []),
                 log_entry,
             ],
         }
@@ -154,7 +181,7 @@ Rules:
     return {
         "upsell_offer": upsell_offer,
         "decision_log": [
-            *state["decision_log"],
+            *state.get("decision_log", []),
             log_entry,
         ],
     }
