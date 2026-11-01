@@ -116,6 +116,25 @@ services:
         "--reload"
       ]
 
+  outbox-worker:
+    build:
+      context: ./buyer_agent
+
+    container_name: shopagent-outbox-worker
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    volumes:
+      - ./buyer_agent:/app
+
+    command: ["python", "outbox_worker.py"]
+
 volumes:
   postgres_data:
   redis_data:

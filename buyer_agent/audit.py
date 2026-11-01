@@ -1,3 +1,4 @@
+
 import logging
 import uuid
 
@@ -26,8 +27,9 @@ engine = create_async_engine(
 
 metadata = MetaData()
 
-audit_log = Table(
-    "audit_log",
+
+audit_outbox = Table(
+    "audit_outbox",
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("run_id", UUID(as_uuid=True), nullable=False),
@@ -36,12 +38,13 @@ audit_log = Table(
     Column("reasoning", Text, nullable=True),
     Column("tokens_used", Integer, nullable=True),
     Column("latency_ms", Integer, nullable=True),
-    Column(
-        "created_at",
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    ),
+    Column("status", Text, nullable=False, server_default="pending"),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("max_attempts", Integer, nullable=False, server_default="5"),
+    Column("next_retry_at", DateTime(timezone=True), nullable=False,
+           server_default=func.now()),
+    Column("created_at", DateTime(timezone=True), nullable=False,
+           server_default=func.now()),
 )
 
 
@@ -56,8 +59,10 @@ async def write_audit_log(
     if not run_id:
         raise ValueError("run_id is required for audit logging")
 
-    statement = insert(audit_log).values(
-        id=uuid.uuid4(),
+    event_id = uuid.uuid4()
+
+    statement = insert(audit_outbox).values(
+        id=event_id,
         run_id=uuid.UUID(str(run_id)),
         node_name=node_name,
         decision=decision,
@@ -68,6 +73,13 @@ async def write_audit_log(
 
     async with engine.begin() as connection:
         await connection.execute(statement)
+
+    logger.info(
+        "Audit event queued: event_id=%s run_id=%s node=%s",
+        event_id,
+        run_id,
+        node_name,
+    )
 
 
 async def close_audit_db():
