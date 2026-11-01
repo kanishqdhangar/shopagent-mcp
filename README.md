@@ -3,6 +3,15 @@
 **An agentic commerce system that helps users discover, compare, and
 purchase products through a conversational shopping workflow.**
 
+
+[![Buyer agent tests](https://github.com/kanishqdhangar/shopagent-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/kanishqdhangar/shopagent-mcp/actions/workflows/tests.yml)
+
+## Demo
+
+<!-- TODO: add demo video link -->
+<!-- TODO: add screenshot or GIF of a full run -->
+<!-- TODO: add one real audit-log row (node, decision, reasoning, tokens_used, latency_ms) -->
+
 ShopAgent is a multi-service application built around an AI-powered
 buyer agent, seller-side product and commerce tools, PostgreSQL with
 `pgvector`, Redis, and asynchronous background processing.
@@ -12,13 +21,19 @@ purchasing: explicit user approval for alternative products,
 deterministic budget checks, payment-status confirmation, persistent
 workflow state, and reliable audit-event delivery.
 
-> **Project status:** Core shopping and checkout workflows,
-> alternative-product approval, payment confirmation, Redis-backed
-> LangGraph checkpointing, and transactional audit outbox processing
-> have been implemented and tested. Some integrations and user-facing
-> components may still be under development. This repository should be
-> treated as an actively developed project, not represented as a fully
-> production-hardened commerce platform.
+> **Project status**
+>
+> Implemented: seller catalog and MCP tools; buyer search, comparison,
+> budget checks, and conversational bargaining; alternative-product
+> approval; Razorpay order creation and signed webhook verification;
+> Redis-backed LangGraph checkpoints; payment reconciliation; and a
+> PostgreSQL audit/resume outbox with a retrying worker. The React app
+> provides assistant chat, discovery, and checkout status.
+>
+> Not implemented: an audit-trail/reasoning dashboard, order-history
+> page, complementary-product discounts in the upsell node, or a hosted
+> deployment configuration. The Compose setup is for local development.
+> ShopAgent is not a production-hardened commerce platform.
 
 ------------------------------------------------------------------------
 
@@ -28,6 +43,7 @@ workflow state, and reliable audit-event delivery.
 -   [Architecture](#architecture)
 -   [Shopping workflow](#shopping-workflow)
 -   [Conversational negotiation](#conversational-negotiation)
+-   [Standalone MCP client](#standalone-mcp-client)
 -   [Technology stack](#technology-stack)
 -   [Reliability and safety](#reliability-and-safety)
 -   [Repository structure](#repository-structure)
@@ -64,8 +80,8 @@ workflow state, and reliable audit-event delivery.
     checkpoints to support interrupt-and-resume flows.
 -   **Transactional audit outbox:** Persists audit events for
     asynchronous delivery, with retries and dead-letter handling.
--   **Background processing:** Uses Redis-backed workers for
-    asynchronous tasks.
+-   **Background processing:** A custom Python worker polls PostgreSQL
+    outbox tables for audit delivery and payment-checkpoint resumption.
 
 ------------------------------------------------------------------------
 
@@ -85,7 +101,26 @@ flowchart TD
     Graph --> Outbox[(Audit Outbox)]
     Outbox --> Worker[Outbox Worker]
     Worker --> Audit[(Audit Log)]
-    Seller --> Payment[Payment Provider]
+    Seller --> Razorpay[Razorpay Test Mode]
+    Razorpay -->|Signed webhook| Seller
+```
+
+``` mermaid
+sequenceDiagram
+    participant U as User
+    participant B as Buyer Agent (LangGraph)
+    participant S as Seller (MCP tools)
+    participant R as Razorpay
+    participant W as Outbox Worker
+    B->>S: create_order (after budget check)
+    S->>R: create test-mode order
+    B-->>U: checkpoint, pause, show Checkout
+    U->>R: pays (test card / UPI)
+    R->>S: signed webhook
+    S->>S: verify signature, order, amount, currency
+    S->>S: mark paid, deduct stock, write resume outbox event
+    W->>B: resume checkpoint from outbox event
+    B-->>U: confirmed
 ```
 
 ### Main components
@@ -112,22 +147,37 @@ flowchart TD
                                       supports vector-based product
                                       retrieval.
 
-  Redis                               Supports workflow checkpointing and
-                                      background-processing
-                                      infrastructure.
+  Redis                               Stores LangGraph workflow
+                                      checkpoints.
 
   Outbox worker                       Delivers persisted audit events
                                       asynchronously and retries failed
                                       deliveries.
 
-  Payment integration                 Supports checkout and
-                                      payment-status confirmation using
-                                      the configured payment provider.
+  Payment integration                 Razorpay test-mode order creation,
+                                      signed webhooks, and payment
+                                      reconciliation.
   -----------------------------------------------------------------------
 
 The diagram is a logical overview. Deployable service names and exact
 boundaries are defined by the Docker Compose configuration in the
 repository.
+
+### Key design decisions
+
+-   **LLM reasons, code decides.** Budget checks and payment-event
+    verification use deterministic code; an LLM cannot override either
+    decision.
+-   **The agent never pays.** A human completes Razorpay Checkout, and
+    the seller verifies the signed event, order, amount, and currency
+    before marking an order paid.
+-   **Outbox instead of direct calls.** Audit entries are queued in
+    PostgreSQL, and payment state changes and resume-outbox rows are
+    committed together. The worker retries delivery and dead-letters
+    exhausted events.
+-   **Interrupt/resume instead of polling.** LangGraph checkpoints the
+    waiting workflow in Redis and resumes it from a verified payment
+    event; reconciliation recovers missed webhooks.
 
 ------------------------------------------------------------------------
 
@@ -182,112 +232,32 @@ user did not authorize:
 
 ## Conversational negotiation
 
-The assistant supports a separate, session-based bargaining flow for a
-selected product. A shopper can ask for a percentage discount, request a
-best price, propose a target price, or send a counteroffer in a later
-message. The negotiation continues through the existing `/chat` API and
-uses the same `session_id`; it does not create a separate negotiation
-session or endpoint.
-
-The buyer agent recognizes the negotiation action and asks the seller's
-MCP `apply_discount` tool for a quote. The seller reads the original
-catalog price, calculates the offer, and enforces `MAX_DISCOUNT_PERCENT`
-(15% by default). A target price is converted to its implied discount
-percentage by the seller. Requests above the seller limit are rejected;
-the seller may return its best allowed offer. The product's catalog price
-is not changed, and a new quote is always calculated from that original
-price, so discounts do not stack.
-
-An offer is returned as structured `negotiation` data in the `/chat`
-response. The assistant UI displays the original price, discount, savings,
-offer price, offer history, and available actions. Accepting an offer
-records acceptance but does not itself place an order. The shopper must
-explicitly ask to buy the product before checkout continues. Before
-checkout, the buyer agent revalidates the accepted offer with the seller;
-order creation independently checks the discount limit and expected
-catalog price again. The seller records the discounted unit price in the
-order cart and creates the Razorpay order using the resulting total.
-
-Example request:
-
-```json
-{
-  "message": "Find running shoes and give me 10% off",
-  "session_id": "shopper-session-123"
-}
-```
-
-The response includes an offer similar to:
-
-```json
-{
-  "response": "The seller's configured discount policy offers 10.00% off Running shoes: ₹2,499.00 to ₹2,249.10. You can accept, counteroffer, or reject.",
-  "session_id": "shopper-session-123",
-  "negotiation": {
-    "product_id": "<seller product UUID>",
-    "product_name": "Running shoes",
-    "original_price": 2499.0,
-    "discount_percent": 10.0,
-    "discounted_price": 2249.1,
-    "status": "pending",
-    "history": []
-  }
-}
-```
-
-Continue bargaining with the same `session_id`, for example:
-`{"message":"Can you make it 12%?","session_id":"shopper-session-123"}`.
-After accepting, send an explicit purchase message such as `Buy it` to
-proceed to checkout.
-
-### Negotiation and automated upsells are separate
-
-Conversational bargaining obtains seller-validated discounts for the
-selected product. The current `check_upsell` node separately considers
-higher-priced in-stock candidates already present in the search results.
-It does not search for complementary products or apply a discount to an
-upsell. The budget guardrail checks the accepted negotiated price for the
-selected product, but does not combine a complementary upsell price with
-that product. Do not interpret the bargaining feature as a discounted
-complementary-product workflow.
+ShopAgent supports seller-validated bargaining on a selected product.
+Offers and counteroffers use the existing `/chat` endpoint and session;
+the seller calculates the price under its configured discount limit.
+See the [negotiation guide](docs/negotiation.md) for the API flow and
+checkout behavior.
 
 ------------------------------------------------------------------------
 
 ## Technology stack
 
-The project uses the following technologies in its current
-implementation:
+The repository currently uses:
 
-  -----------------------------------------------------------------------
-  Area                                Technologies
-  ----------------------------------- -----------------------------------
-  Buyer agent and orchestration       Python, LangGraph, LangChain
-
-  LLM integration                     Google Gemini through the
-                                      configured Google GenAI integration
-
-  Tool integration                    Model Context Protocol (MCP)
-
-  Seller/backend services             FastAPI
-
-  Database                            PostgreSQL
-
-  Vector search                       pgvector
-
-  Cache and workflow checkpointing    Redis
-
-  Background processing               Celery / Redis-backed workers, as
-                                      configured by the services
-
-  Payments                            Razorpay test-mode integration
-
-  Containers                          Docker, Docker Compose
-
-  Testing                             pytest, pytest-asyncio
-  -----------------------------------------------------------------------
-
-Check the service-specific dependency files for the exact installed
-package versions.
+| Area | Technologies |
+| --- | --- |
+| Runtime | Python 3.11 |
+| Buyer agent and orchestration | LangGraph, LangChain Core |
+| LLM integration | Google Gemini via `langchain-google-genai` and `google-genai` |
+| Tool integration | MCP Python SDK (`mcp`) |
+| Seller/backend services | FastAPI, SQLAlchemy, Alembic |
+| Database and vector search | PostgreSQL, pgvector |
+| Workflow checkpointing | Redis through LangGraph's Redis checkpointer |
+| Background processing | Custom Python worker polling PostgreSQL outboxes |
+| Payments | Razorpay Python SDK, Checkout, and signed webhooks |
+| Frontend | React, TypeScript, Vite |
+| Containers | Docker, Docker Compose |
+| Testing | pytest, pytest-asyncio |
 
 ------------------------------------------------------------------------
 
@@ -342,32 +312,37 @@ every external integration is guaranteed to be available at all times.
 
 ## Repository structure
 
-The repository is a multi-service project. The following is a simplified
-view; consult the actual folders for the current implementation.
+The repository is a multi-service project. Its main folders and files
+are:
 
 ``` text
 shopagent-mcp/
-├── buyer_agent/
-│   ├── nodes/                 # Buyer-agent workflow nodes
-│   ├── scenarios/             # Scenario definitions and examples
-│   ├── services/              # Buyer-agent services
-│   ├── tests/                 # pytest tests and manual test runners
-│   ├── tools/                 # MCP and commerce tool integrations
-│   ├── api.py                 # Buyer-agent API
-│   ├── audit.py               # Audit event/outbox integration
-│   ├── graph.py               # LangGraph workflow definition
-│   ├── outbox_worker.py       # Transactional outbox worker
-│   ├── state.py               # Shared workflow state
-│   ├── pytest.ini             # pytest configuration
-│   └── requirements.txt
-├── seller_service/            # Seller-side service (if present)
-├── database/                  # Database migrations and seed resources
-├── docker-compose.yml
-└── README.md
+├── buyer_agent/               # LangGraph buyer API, workflow nodes, tools, tests
+├── database/                  # Shared audit-outbox SQL migration
+├── docs/                      # Project documentation
+├── .github/workflows/         # Buyer-agent test workflow
+├── frontend/                  # React/Vite shopping interface
+├── independent_client/        # Standalone MCP catalog caller
+├── seller/                    # FastAPI seller, MCP tools, migrations, seed script
+├── .env.example               # Environment-variable template
+├── docker-compose.yml         # PostgreSQL, Redis, seller, buyer, outbox worker
+├── LICENSE                    # MIT license
+└── README.md                  # Project documentation
 ```
 
-Some folder names above are illustrative. Use the actual repository tree
-as the source of truth if it differs.
+## Standalone MCP client
+
+With the seller service running, install the MCP Python SDK in the
+Python environment used to run this script (`python -m pip install mcp`)
+and call the public seller catalog tool directly:
+
+``` powershell
+python independent_client/direct_mcp_call.py "running shoes"
+```
+
+The script uses `http://localhost:8000/mcp/` by default. Set
+`MCP_SERVER_URL` to use another seller endpoint. The current local seller
+MCP endpoint does not require an authentication token.
 
 ------------------------------------------------------------------------
 
@@ -389,14 +364,17 @@ cd shopagent-mcp
 
 ### 2. Configure environment variables
 
-Review the environment-variable references in the service configuration
-and Docker Compose file.
+Copy the template and fill in the local database, Redis, and Gemini
+values. Add Razorpay test credentials and a webhook secret to exercise
+payments.
 
-Create local environment files from the repository's example files if
-provided. Add the required database, Redis, LLM, and payment-provider
-configuration.
+``` powershell
+Copy-Item .env.example .env
+```
 
-Do not commit real credentials or local `.env` files.
+The `.env.example` file contains variable names with blank values; the
+application needs values for required settings before it can perform
+catalog search or payments. Never commit `.env` or real credentials.
 
 ### 3. Start the services
 
@@ -420,14 +398,18 @@ docker compose logs -f <service-name>
 
 Use the service names defined in `docker-compose.yml`.
 
-### 4. Initialize the database
+### 4. Initialize the database and catalog
 
-Apply the migrations and seed data using the instructions and scripts
-provided in the `database/` and service directories. Apply seller schema
-migrations with:
+Apply the seller schema migrations:
 
 ``` bash
 docker compose exec seller alembic upgrade head
+```
+
+Seed products and their search embeddings (requires `GEMINI_API_KEY`):
+
+``` powershell
+docker compose exec seller python -m scripts.seed_products
 ```
 
 The payment lifecycle migration adds order-to-thread correlation,
@@ -435,7 +417,69 @@ idempotent payment events, and the durable resume outbox. Configure
 `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and
 `RAZORPAY_WEBHOOK_SECRET` in `.env` before testing payments.
 
-### 5. Stop the services
+### 5. Service URLs
+
+-   Seller API and OpenAPI docs: <http://localhost:8000> and
+    <http://localhost:8000/docs>
+-   Buyer-agent API and OpenAPI docs: <http://localhost:8001> and
+    <http://localhost:8001/docs>
+-   Health checks: `/health` on either service.
+-   Seller MCP endpoint: <http://localhost:8000/mcp/>
+
+The frontend is not a Compose service. Run it in a separate terminal:
+
+``` powershell
+cd frontend
+npm ci
+npm run dev
+```
+
+Open <http://localhost:5173>.
+
+### 6. Search from the buyer API
+
+This request performs a product search; bargaining is documented in
+[Negotiation](docs/negotiation.md).
+
+``` powershell
+curl.exe --request POST "http://localhost:8001/chat" `
+  --header "Content-Type: application/json" `
+  --data '{"message":"Find running shoes","session_id":"demo-search-001"}'
+```
+
+### Testing payments locally
+
+The agent creates the Razorpay order, but a human completes the hosted
+Checkout. The agent does not enter or handle the shopper's card or UPI
+credentials.
+
+Use test-mode API keys. Razorpay's current official card guide lists
+Visa test card `4100 2800 0000 1007`; it accepts any random CVV and a
+future expiry date. The mock bank page accepts a random 4–10 digit OTP
+for success and an OTP shorter than 4 digits for failure. For UPI, use
+`success@razorpay` to simulate success or `failure@razorpay` to simulate
+failure. See Razorpay's [test card details](https://razorpay.com/docs/payments/payments/test-card-details)
+and [test UPI IDs](https://razorpay.com/docs/payments/payments/test-upi-details).
+The older `4111 1111 1111 1111` number is not listed on the current
+official test-card page; use the current listed test card above.
+
+Razorpay cannot deliver webhooks to `localhost`. Expose seller port 8000
+through a tunnel, for example:
+
+``` powershell
+ngrok http 8000
+```
+
+In the Razorpay Dashboard's **Test Mode** webhook settings, register
+`https://<your-tunnel-host>/webhooks/razorpay` for the
+`payment.captured`, `order.paid`, and `payment.failed` events. Set the
+webhook's secret to the same value as `RAZORPAY_WEBHOOK_SECRET` in `.env`.
+This webhook secret is distinct from the Razorpay API key secret.
+
+The seller's reconciliation task also checks pending orders and recovers
+payments whose webhooks were missed.
+
+### 7. Stop the services
 
 ``` bash
 docker compose down
@@ -452,21 +496,22 @@ docker compose down -v
 
 ## Running the tests
 
-The buyer-agent pytest suite is configured in `buyer_agent/pytest.ini`.
-
-Start the required Redis service if it is not already running:
-
-``` bash
-docker compose up -d redis
-```
-
-Run the buyer-agent tests from the repository root:
+The buyer-agent suite uses the pytest configuration in
+`buyer_agent/pytest.ini`. Start the Compose services first so Redis is
+available at the hostname used by the checkpoint tests:
 
 ``` bash
-docker compose run --rm --no-deps buyer-agent pytest tests/ -v
+docker compose up --build -d
 ```
 
-The current verified buyer-agent suite contains **51 passing tests**. It
+Run both suites from the repository root:
+
+``` bash
+docker compose exec buyer-agent python -m pytest tests/ -q -p no:cacheprovider
+docker compose exec seller python -m pytest tests/ -q -p no:cacheprovider
+```
+
+The latest observed buyer-agent run contained **51 passing tests**. It
 covers:
 
 -   Checkout and alternative-product handling.
@@ -479,15 +524,18 @@ covers:
 -   Negotiation message parsing, counteroffers, acceptance, and
     seller-provided maximum-offer handling.
 
-Seller discount calculation tests are in `seller/tests/`. The seller
-container must have pytest installed to run them.
+Seller tests cover payment-security validation and discount-policy
+calculations. Pytest is included in `seller/requirements.txt`; rebuilding
+the seller image installs it. The seller suite has not yet been verified
+in this environment.
 
 Some older files in the test directory are manual test runners and are
 not necessarily collected by pytest.
 
-The Redis checkpointer currently emits a dependency deprecation warning
-in the test environment. The verified test run completed successfully
-despite these warnings.
+The buyer Redis checkpointer emits a dependency deprecation warning in
+the test environment; the buyer test run completed successfully despite
+that warning. The buyer suite uses mocked model/seller interactions and
+does not require real Gemini or Razorpay credentials.
 
 ------------------------------------------------------------------------
 
@@ -538,9 +586,8 @@ Typical configuration categories include:
 -   Payment provider test credentials and webhook secret.
 -   Internal service URLs and MCP connection settings.
 
-The exact variable names are defined by the current service
-configuration and Compose files. Do not assume that names in this list
-are literal environment-variable names.
+The variable names are listed in `.env.example`. Copy that file to
+`.env` and fill in the values required by the services you run.
 
 For local development:
 
@@ -569,9 +616,18 @@ Before production use, review at least:
 -   Load, concurrency, and failure testing across all services.
 -   Deployment secrets, network policies, and infrastructure security.
 
-Some user-facing functionality and integrations may remain incomplete.
-Refer to the current code and service configuration for the exact
-implementation status.
+-   The order-history page is a placeholder; the application does not
+    expose an order-history API.
+-   The UI does not provide an audit-trail or reasoning dashboard.
+-   `check_upsell` selects from existing search candidates; it does not
+    search for complementary products or apply discounts to upsells.
+-   The budget guardrail checks the selected product and an accepted
+    negotiation price. Negotiation discounts apply to the selected
+    product only; `check_upsell` selects from existing candidates and
+    does not find complementary products, offer discounted upsells, or
+    calculate a combined upsell total.
+-   The repository has local Docker Compose configuration, not a hosted
+    deployment pipeline or production deployment configuration.
 
 ## Author
 
@@ -581,6 +637,7 @@ Software Developer | Backend & AI Systems
 
 - GitHub: [@kanishqdhangar](https://github.com/kanishqdhangar)
 - Project: [ShopAgent](https://github.com/kanishqdhangar/shopagent-mcp)
+- Portfolio: [Kanishq Dhangar](https://portfolio-kanishqdhangars-projects.vercel.app)
 
 Built as a project exploring agentic AI, distributed systems,
 MCP-based integrations, and reliable commerce workflows.
