@@ -51,6 +51,9 @@ class ChatResponse(BaseModel):
     order_status: str = "not_started"
     order_id: Optional[str] = None
     failure_reason: Optional[str] = None
+    payment_required: bool = False
+    payment: Optional[dict[str, Any]] = None
+    payment_status: Optional[str] = None
 
 
 # -------------------------
@@ -82,6 +85,18 @@ def build_chat_response(result: dict, session_id: str) -> ChatResponse:
     intent_type = parsed_filters.get("intent_type", "search")
 
     if interrupt_payload:
+        if interrupt_payload.get("type") == "payment_required":
+            return ChatResponse(
+                response=interrupt_payload.get("message", "Complete payment to continue."),
+                session_id=session_id,
+                intent_type=intent_type,
+                products=[result["chosen_product"]] if result.get("chosen_product") else [],
+                order_status=result.get("order_status", "created"),
+                order_id=result.get("order_id"),
+                payment_required=True,
+                payment=interrupt_payload.get("payment") or result.get("payment_details"),
+                payment_status=result.get("payment_status", "pending"),
+            )
         product = interrupt_payload.get("product", {})
 
         return ChatResponse(
@@ -156,6 +171,7 @@ def build_chat_response(result: dict, session_id: str) -> ChatResponse:
         order_status=result.get("order_status", "not_started"),
         order_id=result.get("order_id"),
         failure_reason=result.get("failure_reason"),
+        payment_status=result.get("payment_status"),
     )
 
 # -------------------------
@@ -185,8 +201,16 @@ async def chat(request: ChatRequest):
         }
     }
 
+    snapshot = await buyer_graph.aget_state(config)
+    if snapshot and any(getattr(task, "interrupts", ()) for task in snapshot.tasks):
+        raise HTTPException(
+            status_code=409,
+            detail="This conversation has a pending approval or payment. Resolve it before sending another request.",
+        )
+
     initial_state = {
         "run_id": str(uuid.uuid4()),
+        "thread_id": request.session_id,
         "goal": request.message,
         "scenario": "budget_search",
         "parsed_filters": None,
@@ -198,6 +222,8 @@ async def chat(request: ChatRequest):
         "budget_ceiling": None,
         "order_status": "not_started",
         "order_id": None,
+        "payment_details": None,
+        "payment_status": "not_started",
         "decision_log": [],
         "failure_reason": None,
         "pending_alternative": None,

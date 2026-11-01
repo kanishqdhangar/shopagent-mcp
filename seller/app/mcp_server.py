@@ -198,6 +198,7 @@ async def apply_discount(
 @mcp.tool()
 async def create_order(
     items: list[dict],
+    graph_thread_id: str | None = None,
 ) -> dict:
     """
     Create an order after validating products and inventory.
@@ -211,6 +212,7 @@ async def create_order(
         return await create_order_service(
             db,
             items,
+            graph_thread_id,
         )
 
 @mcp.tool()

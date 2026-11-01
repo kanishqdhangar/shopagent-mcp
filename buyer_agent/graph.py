@@ -11,6 +11,7 @@ from nodes.checkout import checkout
 from nodes.confirm import confirm
 from nodes.confirm_alternative import confirm_alternative
 from nodes.checkout_alternative import checkout_alternative
+from nodes.await_payment import await_payment, handle_payment_failure
 
 MAX_CONFIDENCE_RETRIES = 2
 CONFIDENCE_THRESHOLD = 0.5
@@ -51,6 +52,9 @@ def route_after_checkout(state: AgentState):
     if state.get("order_status") == "awaiting_confirmation":
         return "needs_confirmation"
 
+    if state.get("order_status") == "created":
+        return "await_payment"
+
     return "proceed"
 
 
@@ -67,6 +71,9 @@ def route_after_alternative_confirmation(state: AgentState):
 def route_after_alternative_checkout(state: AgentState):
     if state.get("failure_reason"):
         return "failed"
+
+    if state.get("order_status") == "created":
+        return "await_payment"
 
     return "proceed"
 
@@ -138,6 +145,8 @@ async def build_buyer_graph():
     )
 
     builder.add_node("confirm", confirm)
+    builder.add_node("await_payment", await_payment)
+    builder.add_node("handle_payment_failure", handle_payment_failure)
     builder.add_node(
         "confirm_alternative",
         confirm_alternative,
@@ -195,6 +204,7 @@ async def build_buyer_graph():
         {
             "failed": END,
             "needs_confirmation": "confirm_alternative",
+            "await_payment": "await_payment",
             "proceed": "confirm",
         },
     )
@@ -212,11 +222,18 @@ async def build_buyer_graph():
     route_after_alternative_checkout,
         {
             "failed": END,
+            "await_payment": "await_payment",
             "proceed": "confirm",
         },
     )
     
     builder.add_edge("confirm", END)
+    builder.add_conditional_edges(
+        "await_payment",
+        lambda state: "confirmed" if state.get("payment_status") == "paid" else "failed",
+        {"confirmed": "confirm", "failed": "handle_payment_failure"},
+    )
+    builder.add_edge("handle_payment_failure", END)
 
     return builder.compile(
         checkpointer=checkpointer,

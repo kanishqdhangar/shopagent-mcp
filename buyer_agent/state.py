@@ -23,6 +23,7 @@ class ParsedFilters(BaseModel):
 
 class AgentState(TypedDict):
     run_id: str
+    thread_id: str
     goal: str
     scenario: str
 
@@ -38,6 +39,8 @@ class AgentState(TypedDict):
 
     order_status: str
     order_id: Optional[str]
+    payment_details: Optional[dict]
+    payment_status: str
 
     # Human confirmation for alternative products
     pending_alternative: Optional[dict]

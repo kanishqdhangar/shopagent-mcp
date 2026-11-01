@@ -53,9 +53,9 @@ workflow state, and reliable audit-event delivery.
 -   **Human approval for alternatives:** If the selected product is out
     of stock, the agent can offer an eligible alternative and wait for
     explicit approval before ordering it.
--   **Payment confirmation:** Handles payment-status polling and pending
-    outcomes rather than assuming that order creation means payment
-    completion.
+-   **Human-in-the-loop payment:** The buyer graph pauses at the payment
+    step, and the seller webhook resumes it only after a verified,
+    amount-matched Razorpay event.
 -   **Persistent workflow state:** Uses Redis-backed LangGraph
     checkpoints to support interrupt-and-resume flows.
 -   **Transactional audit outbox:** Persists audit events for
@@ -152,8 +152,14 @@ A typical shopping request follows this high-level flow:
 9.  **Revalidate and order** --- After approval, the system checks the
     alternative's inventory and budget again before attempting the
     order.
-10. **Confirm payment** --- The system checks payment status and can
-    retain a pending state when confirmation is not yet available.
+10. **Pause for payment** --- The buyer graph checkpoints the ShopAgent
+    and Razorpay order details under the conversation thread ID.
+11. **Verify payment** --- Razorpay sends a signed event. The seller
+    validates signature, order, amount, currency, and event status before
+    marking the order paid and deducting inventory.
+12. **Resume the workflow** --- A durable payment outbox event lets the
+    buyer worker resume the checkpoint. A server-side reconciliation task
+    recovers payments whose webhooks were missed.
 
 ### Alternative-product approval
 
@@ -228,10 +234,12 @@ instead of continuing to purchase.
 
 ### Payment confirmation
 
-Order creation and payment confirmation are treated as separate stages.
-The confirmation flow handles paid, pending, failed, missing-order, and
-status-service-error outcomes. A pending payment is not reported as
-paid.
+Order creation and payment confirmation are separate stages. The graph
+does not poll while waiting: it interrupts, and the worker resumes it
+from a durable seller outbox event after payment verification. The
+frontend treats the Checkout callback only as a signal to check the
+seller's order-status endpoint; only the seller-confirmed status is shown
+as paid.
 
 ### Redis-backed checkpoints
 
@@ -338,8 +346,17 @@ Use the service names defined in `docker-compose.yml`.
 ### 4. Initialize the database
 
 Apply the migrations and seed data using the instructions and scripts
-provided in the `database/` and service directories. The exact commands
-depend on the migration and seed tooling configured in this checkout.
+provided in the `database/` and service directories. Apply seller schema
+migrations with:
+
+``` bash
+docker compose exec seller alembic upgrade head
+```
+
+The payment lifecycle migration adds order-to-thread correlation,
+idempotent payment events, and the durable resume outbox. Configure
+`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and
+`RAZORPAY_WEBHOOK_SECRET` in `.env` before testing payments.
 
 ### 5. Stop the services
 

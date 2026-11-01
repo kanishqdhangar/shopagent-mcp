@@ -109,11 +109,13 @@ async def apply_discount(
 
 async def create_order(
     items: list[dict[str, Any]],
+    graph_thread_id: str | None = None,
 ) -> dict[str, Any]:
     return await _call_mcp_tool(
         "create_order",
         {
             "items": items,
+            "graph_thread_id": graph_thread_id,
         },
     )
 

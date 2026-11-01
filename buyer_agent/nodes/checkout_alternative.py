@@ -78,14 +78,10 @@ async def checkout_alternative(state: AgentState) -> dict[str, Any]:
 
     # Exactly one order attempt for the explicitly approved alternative.
     try:
-        result = await create_order(
-            items=[
-                {
-                    "product_id": str(product_id),
-                    "quantity": 1,
-                }
-            ]
-        )
+        arguments = {"items": [{"product_id": str(product_id), "quantity": 1}]}
+        if state.get("thread_id"):
+            arguments["graph_thread_id"] = state["thread_id"]
+        result = await create_order(**arguments)
     except Exception as exc:
         return failure(
             "alternative_order_error",
@@ -118,6 +114,16 @@ async def checkout_alternative(state: AgentState) -> dict[str, Any]:
         },
         "order_status": "created",
         "order_id": order_id,
+        "payment_status": "pending",
+        "payment_details": {
+            "order_id": order_id,
+            "razorpay_order_id": result.get("razorpay_order_id"),
+            "amount": result.get("total_amount"),
+            "amount_paise": result.get("razorpay_amount"),
+            "currency": result.get("currency", "INR"),
+            "key_id": result.get("razorpay_key_id"),
+            "items": result.get("cart", []),
+        },
         "failure_reason": None,
         "decision_log": [*decision_log, entry],
     }

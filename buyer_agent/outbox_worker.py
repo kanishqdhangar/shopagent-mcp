@@ -22,6 +22,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID, insert as pg_insert
 from sqlalchemy.ext.asyncio import create_async_engine
+from langgraph.types import Command
 
 
 logging.basicConfig(
@@ -81,6 +82,31 @@ audit_log = Table(
     Column("latency_ms", Integer),
     Column("created_at", DateTime(timezone=True)),
 )
+
+payment_resume_outbox = Table(
+    "payment_resume_outbox",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("payment_event_id", UUID(as_uuid=True), nullable=False),
+    Column("thread_id", Text, nullable=False),
+    Column("order_id", UUID(as_uuid=True), nullable=False),
+    Column("payment_status", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("next_retry_at", DateTime(timezone=True), nullable=False),
+    Column("locked_at", DateTime(timezone=True)),
+    Column("last_error", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+orders_table = Table(
+    "orders",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("payment_status", Text, nullable=False),
+)
+
+buyer_graph = None
 
 
 async def claim_events():
@@ -391,18 +417,85 @@ async def process_one_event(event):
 async def process_batch():
     events = await claim_events()
 
-    if not events:
-        return 0
+    if events:
+        await asyncio.gather(*(process_one_event(event) for event in events))
 
-    await asyncio.gather(
-        *(process_one_event(event) for event in events)
-    )
+    payment_events = await claim_payment_events()
+    if payment_events:
+        await asyncio.gather(*(process_one_payment_event(event) for event in payment_events))
 
-    return len(events)
+    return len(events) + len(payment_events)
+
+
+async def claim_payment_events():
+    async with engine.begin() as connection:
+        expired = and_(
+            payment_resume_outbox.c.status == "processing",
+            payment_resume_outbox.c.locked_at < func.now() - func.make_interval(0, 0, 0, 0, 0, 0, LOCK_TIMEOUT_SECONDS),
+        )
+        await connection.execute(
+            update(payment_resume_outbox).where(expired).values(status="pending", locked_at=None, last_error="Recovered expired payment resume lease")
+        )
+        result = await connection.execute(
+            select(payment_resume_outbox).where(
+                and_(payment_resume_outbox.c.status == "pending", payment_resume_outbox.c.next_retry_at <= func.now())
+            ).order_by(payment_resume_outbox.c.next_retry_at, payment_resume_outbox.c.created_at).limit(BATCH_SIZE).with_for_update(skip_locked=True)
+        )
+        events = result.mappings().all()
+        claimed = []
+        for event in events:
+            await connection.execute(
+                update(payment_resume_outbox).where(payment_resume_outbox.c.id == event["id"]).values(
+                    status="processing", attempts=event["attempts"] + 1, locked_at=func.now(), last_error=None,
+                )
+            )
+            claimed.append({**dict(event), "attempts": event["attempts"] + 1})
+        return claimed
+
+
+async def process_one_payment_event(event):
+    global buyer_graph
+    try:
+        async with engine.connect() as connection:
+            order_result = await connection.execute(
+                select(orders_table.c.payment_status).where(orders_table.c.id == event["order_id"])
+            )
+            latest_status = order_result.scalar_one_or_none()
+        payment_status = latest_status if latest_status in {"paid", "failed"} else event["payment_status"]
+        config = {"configurable": {"thread_id": event["thread_id"]}}
+        snapshot = await buyer_graph.aget_state(config)
+        # If a prior worker resumed and checkpointed the graph before dying,
+        # its next node is no longer the payment interrupt. Mark the event
+        # delivered without issuing a second resume.
+        if "await_payment" in (snapshot.next or ()):
+            await buyer_graph.ainvoke(
+                Command(resume={"payment_status": payment_status, "event_id": str(event["payment_event_id"])}),
+                config=config,
+            )
+        elif "confirm" in (snapshot.next or ()):
+            # Recover a process restart between the payment node checkpoint
+            # and the terminal confirmation node.
+            await buyer_graph.ainvoke(None, config=config)
+        async with engine.begin() as connection:
+            await connection.execute(update(payment_resume_outbox).where(
+                and_(payment_resume_outbox.c.id == event["id"], payment_resume_outbox.c.status == "processing")
+            ).values(status="delivered", locked_at=None, last_error=None))
+        logger.info("Resumed payment workflow thread=%s event=%s", event["thread_id"], event["payment_event_id"])
+    except Exception as error:
+        delay = min(2 ** event["attempts"], 300)
+        async with engine.begin() as connection:
+            await connection.execute(update(payment_resume_outbox).where(
+                and_(payment_resume_outbox.c.id == event["id"], payment_resume_outbox.c.status == "processing")
+            ).values(status="pending", next_retry_at=func.now() + func.make_interval(0, 0, 0, 0, 0, 0, delay), locked_at=None, last_error=str(error)[:4000]))
+        logger.exception("Payment workflow resume failed for event=%s", event["payment_event_id"])
 
 
 
 async def main():
+
+    global buyer_graph
+    from graph import build_buyer_graph
+    buyer_graph = await build_buyer_graph()
     logger.info("Outbox worker started: %s", WORKER_ID)
 
     shutdown_event = asyncio.Event()

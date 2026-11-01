@@ -53,14 +53,10 @@ async def checkout(state: AgentState) -> dict[str, Any]:
     budget_ceiling = state.get("budget_ceiling")
 
     async def attempt_order(product):
-        return await create_order(
-            items=[
-                {
-                    "product_id": str(product["id"]),
-                    "quantity": 1,
-                }
-            ]
-        )
+        arguments = {"items": [{"product_id": str(product["id"]), "quantity": 1}]}
+        if state.get("thread_id"):
+            arguments["graph_thread_id"] = state["thread_id"]
+        return await create_order(**arguments)
 
     # Attempt 1: Original selected product.
     try:
@@ -89,6 +85,16 @@ async def checkout(state: AgentState) -> dict[str, Any]:
             "chosen_product": chosen_product,
             "order_status": "created",
             "order_id": order_id,
+            "payment_status": "pending",
+            "payment_details": {
+                "order_id": order_id,
+                "razorpay_order_id": result.get("razorpay_order_id"),
+                "amount": result.get("total_amount"),
+                "amount_paise": result.get("razorpay_amount"),
+                "currency": result.get("currency", "INR"),
+                "key_id": result.get("razorpay_key_id"),
+                "items": result.get("cart", []),
+            },
             "failure_reason": None,
             "confirmation_status": "not_required",
             "decision_log": [*decision_log, entry],

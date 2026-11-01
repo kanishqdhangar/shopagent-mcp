@@ -1,19 +1,23 @@
 import razorpay
 
 from decimal import Decimal
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import Order, Product
+from app.models import AuditLog, Order, PaymentEvent, PaymentResumeOutbox, Product
+from app.payment_security import validate_payment_event
 
 from app.services.product_service import decrement_inventory
 
 async def create_order(
     db: AsyncSession,
     items: list[dict],
+    graph_thread_id: str | None = None,
 ) -> dict:
     if not items:
         return {
@@ -100,6 +104,9 @@ async def create_order(
         Decimal("0.01")
     )
 
+    if not settings.razorpay_key_id or not settings.razorpay_key_secret:
+        return {"created": False, "reason": "Razorpay payment credentials are not configured."}
+
     # Razorpay expects the amount in paise.
     razorpay_amount = int(
         total_amount * Decimal("100")
@@ -136,6 +143,9 @@ async def create_order(
         status="created",
         cart_json=validated_items,
         total_amount=total_amount,
+        graph_thread_id=graph_thread_id,
+        payment_status="pending",
+        currency="INR",
     )
 
     db.add(order)
@@ -152,6 +162,7 @@ async def create_order(
         "total_amount": float(order.total_amount),
         "currency": "INR",
         "razorpay_amount": razorpay_amount,
+        "razorpay_key_id": settings.razorpay_key_id,
     }
 
 async def get_order(
@@ -182,112 +193,168 @@ async def get_order(
             if order.confirmed_at
             else None
         ),
+        "cart": order.cart_json,
+        "payment_status": order.payment_status,
+        "razorpay_payment_id": order.razorpay_payment_id,
+        "currency": order.currency,
     }
 
 
-async def mark_order_paid(
+async def process_payment_webhook(
     db: AsyncSession,
+    *,
+    event_id: str,
+    event_type: str,
     razorpay_order_id: str,
+    razorpay_payment_id: str | None,
+    amount: int | None,
+    currency: str | None,
+    captured: bool,
+    payload: dict,
 ) -> dict:
-    result = await db.execute(
-        select(Order).where(
-            Order.razorpay_order_id == razorpay_order_id
-        )
-    )
-
-    order = result.scalar_one_or_none()
-
-    if order is None:
-        return {
-            "updated": False,
-            "reason": "Order not found.",
-        }
-
-    # Idempotency:
-    # A duplicate successful webhook must not
-    # deduct inventory again.
-    if order.status == "paid":
-        return {
-            "updated": False,
-            "already_paid": True,
-            "order_id": str(order.id),
-            "razorpay_order_id": order.razorpay_order_id,
-            "status": order.status,
-        }
-
-    cart = order.cart_json
-
-    if not isinstance(cart, list):
+    """Atomically record a verified Razorpay event and queue graph resumption."""
+    existing = await db.execute(select(PaymentEvent).where(PaymentEvent.razorpay_event_id == event_id).with_for_update())
+    if existing.scalar_one_or_none():
         await db.rollback()
+        return {"processed": False, "duplicate": True}
 
-        return {
-            "updated": False,
-            "reason": "Invalid order cart.",
-        }
+    result = await db.execute(select(Order).where(Order.razorpay_order_id == razorpay_order_id).with_for_update())
+    order = result.scalar_one_or_none()
+    if order is None:
+        await db.rollback()
+        return {"processed": False, "reason": "Order not found."}
 
-    # Deduct inventory for every item in the order.
-    for item in cart:
-        product_id = item.get("product_id")
-        quantity = item.get("quantity", 1)
+    validation_error = validate_payment_event(
+        expected_amount=Decimal(order.total_amount),
+        expected_currency=order.currency,
+        amount=amount,
+        currency=currency,
+        event_type=event_type,
+        captured=captured,
+    )
+    if validation_error:
+        await db.rollback()
+        return {"processed": False, "reason": validation_error}
 
-        if not product_id:
+    next_status = "paid" if captured else "failed"
+    should_resume = order.payment_status != next_status
+    if order.payment_status == "paid" and next_status != "paid":
+        await db.rollback()
+        return {"processed": False, "ignored": True, "status": "paid"}
+
+    # Record the event idempotently. The unique constraint is the final
+    # guard for concurrent webhook deliveries.
+    event = PaymentEvent(
+        razorpay_event_id=event_id,
+        event_type=event_type,
+        razorpay_order_id=razorpay_order_id,
+        razorpay_payment_id=razorpay_payment_id,
+        status=next_status,
+        payload=payload,
+    )
+    db.add(event)
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        return {"processed": False, "duplicate": True}
+
+    if next_status == "paid" and order.payment_status != "paid":
+        cart = order.cart_json
+        if not isinstance(cart, list):
             await db.rollback()
+            return {"processed": False, "reason": "Invalid order cart."}
+        for item in cart:
+            product_id = item.get("product_id")
+            quantity = item.get("quantity", 1)
+            if not product_id or not isinstance(quantity, int) or quantity <= 0:
+                await db.rollback()
+                return {"processed": False, "reason": "Invalid order item."}
+            try:
+                parsed_product_id = UUID(str(product_id))
+            except ValueError:
+                await db.rollback()
+                return {"processed": False, "reason": "Invalid product ID in order."}
+            if not await decrement_inventory(db, parsed_product_id, quantity):
+                await db.rollback()
+                return {"processed": False, "reason": "Insufficient stock while confirming payment."}
+        from datetime import datetime, timezone
+        order.status = "paid"
+        order.payment_status = "paid"
+        order.confirmed_at = datetime.now(timezone.utc)
+        order.razorpay_payment_id = razorpay_payment_id
+    elif next_status == "failed" and order.payment_status != "paid":
+        order.status = "payment_failed"
+        order.payment_status = "failed"
+        order.razorpay_payment_id = razorpay_payment_id
 
-            return {
-                "updated": False,
-                "reason": "Cart item is missing product_id.",
-            }
-
+    if order.graph_thread_id and should_resume:
+        db.add(PaymentResumeOutbox(
+            payment_event_id=event.id,
+            thread_id=order.graph_thread_id,
+            order_id=order.id,
+            payment_status=next_status,
+        ))
         try:
-            parsed_product_id = UUID(str(product_id))
+            run_id = UUID(order.graph_thread_id)
         except ValueError:
-            await db.rollback()
-
-            return {
-                "updated": False,
-                "reason": f"Invalid product_id: {product_id}.",
-            }
-
-        if not isinstance(quantity, int) or quantity <= 0:
-            await db.rollback()
-
-            return {
-                "updated": False,
-                "reason": (
-                    f"Invalid quantity for product {product_id}."
-                ),
-            }
-
-        inventory_updated = await decrement_inventory(
-            db,
-            parsed_product_id,
-            quantity,
-        )
-
-        if not inventory_updated:
-            await db.rollback()
-
-            return {
-                "updated": False,
-                "reason": (
-                    f"Insufficient stock while confirming "
-                    f"order for product {product_id}."
-                ),
-            }
-
-    from datetime import datetime, timezone
-
-    order.status = "paid"
-    order.confirmed_at = datetime.now(timezone.utc)
+            run_id = UUID(int=0)
+        db.add(AuditLog(
+            run_id=run_id,
+            node_name="razorpay_webhook",
+            decision=f"Payment {next_status}",
+            reasoning=f"Verified {event_type} event {event_id} for order {order.id}.",
+            tokens_used=0,
+            latency_ms=0,
+        ))
 
     await db.commit()
-    await db.refresh(order)
+    return {"processed": True, "duplicate": False, "order_id": str(order.id), "status": order.status, "payment_status": order.payment_status}
 
-    return {
-        "updated": True,
-        "already_paid": False,
-        "order_id": str(order.id),
-        "razorpay_order_id": order.razorpay_order_id,
-        "status": order.status,
-        "confirmed_at": order.confirmed_at.isoformat(),
-    }
+
+async def reconcile_pending_payments(db: AsyncSession, limit: int = 25) -> int:
+    """Recover payments if Razorpay's webhook delivery was missed."""
+    import asyncio
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=30)
+    result = await db.execute(
+        select(Order).where(
+            Order.status.in_(["created", "payment_failed"]),
+            Order.created_at <= cutoff,
+            Order.razorpay_order_id.is_not(None),
+        ).order_by(Order.created_at).limit(limit)
+    )
+    orders = result.scalars().all()
+    if not orders:
+        return 0
+
+    client = razorpay.Client(auth=(settings.razorpay_key_id, settings.razorpay_key_secret))
+    reconciled = 0
+    for order in orders:
+        try:
+            response = await asyncio.to_thread(client.order.payments, order.razorpay_order_id)
+            payments = response.get("items", []) if isinstance(response, dict) else []
+        except Exception:
+            continue
+        captured = next((p for p in payments if p.get("status") == "captured"), None)
+        payment = captured
+        if payment is None and payments and all(p.get("status") == "failed" for p in payments):
+            payment = payments[-1]
+        if not payment:
+            continue
+        status = payment.get("status")
+        event_type = "payment.captured" if status == "captured" else "payment.failed"
+        result = await process_payment_webhook(
+            db,
+            event_id=f"reconcile:{payment.get('id')}",
+            event_type=event_type,
+            razorpay_order_id=order.razorpay_order_id,
+            razorpay_payment_id=payment.get("id"),
+            amount=int(payment["amount"]) if payment.get("amount") is not None else None,
+            currency=payment.get("currency"),
+            captured=status == "captured",
+            payload={"source": "razorpay_reconciliation", "payment": payment},
+        )
+        if result.get("processed"):
+            reconciled += 1
+    return reconciled
