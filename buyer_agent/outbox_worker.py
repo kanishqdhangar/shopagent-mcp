@@ -4,6 +4,7 @@ import logging
 import os
 import socket
 import uuid
+import signal
 
 from sqlalchemy import (
     Column,
@@ -35,7 +36,9 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 POLL_INTERVAL = float(os.getenv("OUTBOX_POLL_INTERVAL", "2"))
 BATCH_SIZE = int(os.getenv("OUTBOX_BATCH_SIZE", "10"))
 LOCK_TIMEOUT_SECONDS = int(os.getenv("OUTBOX_LOCK_TIMEOUT", "120"))
-
+HEARTBEAT_INTERVAL_SECONDS = int(
+    os.getenv("OUTBOX_HEARTBEAT_INTERVAL", "30")
+)
 WORKER_ID = f"{socket.gethostname()}-{uuid.uuid4()}"
 
 engine = create_async_engine(
@@ -180,7 +183,46 @@ async def claim_events():
 
         return claimed
 
+async def renew_event_lock(event_id):
+    """
+    Renew the processing lease while this worker owns the event.
+    """
+    async with engine.begin() as connection:
+        result = await connection.execute(
+            update(audit_outbox)
+            .where(
+                and_(
+                    audit_outbox.c.id == event_id,
+                    audit_outbox.c.status == "processing",
+                    audit_outbox.c.locked_by == WORKER_ID,
+                )
+            )
+            .values(locked_at=func.now())
+        )
 
+        return result.rowcount == 1
+
+async def heartbeat(event_id, stop_event):
+    """
+    Periodically renew the event lease until processing finishes.
+    """
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(),
+                timeout=HEARTBEAT_INTERVAL_SECONDS,
+            )
+            break
+        except asyncio.TimeoutError:
+            renewed = await renew_event_lock(event_id)
+
+            if not renewed:
+                logger.warning(
+                    "Lost ownership while renewing event %s",
+                    event_id,
+                )
+                stop_event.set()
+                return
 
 async def deliver_event(event):
     """
@@ -290,19 +332,31 @@ async def record_failure(event, error):
             )
         )
 
-    logger.exception(
-        "Failed to deliver event %s (attempt %s/%s)",
+    logger.error(
+        "Failed to deliver event %s (attempt %s/%s): %s",
         event["id"],
         event["attempts"],
         event["max_attempts"],
+        error_message,
     )
 
 
 
 async def process_one_event(event):
+    stop_event = asyncio.Event()
+
+    heartbeat_task = asyncio.create_task(
+        heartbeat(event["id"], stop_event)
+    )
+
     try:
         delivered = await deliver_event(event)
-
+        if stop_event.is_set():
+            logger.warning(
+                "Event processing stopped after lease loss: %s",
+                event["id"],
+            )
+            return
         if delivered:
             logger.info(
                 "Delivered event=%s run_id=%s node=%s",
@@ -325,6 +379,14 @@ async def process_one_event(event):
                 event["id"],
             )
 
+    finally:
+        stop_event.set()
+        heartbeat_task.cancel()
+
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
 
 async def process_batch():
     events = await claim_events()
@@ -343,30 +405,48 @@ async def process_batch():
 async def main():
     logger.info("Outbox worker started: %s", WORKER_ID)
 
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    # Handle Docker SIGTERM and manual SIGINT.
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, shutdown_event.set)
+
     try:
-        while True:
+        while not shutdown_event.is_set():
             try:
                 processed = await process_batch()
 
                 if processed == 0:
-                    await asyncio.sleep(POLL_INTERVAL)
+                    try:
+                        await asyncio.wait_for(
+                            shutdown_event.wait(),
+                            timeout=POLL_INTERVAL,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
 
             except asyncio.CancelledError:
                 raise
 
             except Exception:
                 logger.exception(
-                    "Outbox worker batch failed. "
-                    "Retrying after %s seconds.",
+                    "Outbox worker batch failed. Retrying after %s seconds.",
                     POLL_INTERVAL,
                 )
 
-                await asyncio.sleep(POLL_INTERVAL)
+                try:
+                    await asyncio.wait_for(
+                        shutdown_event.wait(),
+                        timeout=POLL_INTERVAL,
+                    )
+                except asyncio.TimeoutError:
+                    pass
 
     finally:
         logger.info("Outbox worker shutting down")
         await engine.dispose()
-
+        logger.info("Outbox worker stopped gracefully")
 
 if __name__ == "__main__":
     try:

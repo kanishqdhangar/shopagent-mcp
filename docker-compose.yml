@@ -122,7 +122,7 @@ services:
 
     container_name: shopagent-outbox-worker
     restart: unless-stopped
-
+    stop_grace_period: 45s
     env_file:
       - .env
 
