@@ -13,6 +13,7 @@ from app.models import AuditLog, Order, PaymentEvent, PaymentResumeOutbox, Produ
 from app.payment_security import validate_payment_event
 
 from app.services.product_service import decrement_inventory
+from app.services.discount_service import quote_discount
 
 async def create_order(
     db: AsyncSession,
@@ -84,9 +85,21 @@ async def create_order(
                 "available_stock": product.stock_qty,
             }
 
-        line_total = (
-            Decimal(product.price) * quantity
-        )
+        try:
+            discount_percent = Decimal(str(item.get("discount_percent", 0)))
+            if not discount_percent.is_finite() or discount_percent < 0:
+                raise ValueError("Discount percent must be a finite non-negative number.")
+            if discount_percent > Decimal(str(settings.max_discount_percent)):
+                raise ValueError(f"Discount exceeds seller maximum of {settings.max_discount_percent:.2f}%.")
+            original_unit_price = Decimal(product.price).quantize(Decimal("0.01"))
+            expected_price = item.get("expected_original_price")
+            if expected_price is not None and Decimal(str(expected_price)).quantize(Decimal("0.01")) != original_unit_price:
+                raise ValueError("Catalog price changed since the offer was made; request a fresh offer.")
+        except (ValueError, ArithmeticError) as exc:
+            return {"created": False, "error_code": "DISCOUNT_REJECTED", "reason": str(exc)}
+
+        unit_price = quote_discount(original_unit_price, discount_percent)
+        line_total = unit_price * quantity
 
         total_amount += line_total
 
@@ -95,7 +108,9 @@ async def create_order(
                 "product_id": str(product.id),
                 "name": product.name,
                 "quantity": quantity,
-                "unit_price": float(product.price),
+                "original_unit_price": float(original_unit_price),
+                "discount_percent": float(discount_percent),
+                "unit_price": float(unit_price),
                 "line_total": float(line_total),
             }
         )

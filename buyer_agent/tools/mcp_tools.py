@@ -97,13 +97,19 @@ async def check_inventory(
 
 async def apply_discount(
     product_id: str,
-    percent: float,
+    percent: float | None = None,
+    target_price: float | None = None,
+    best_price: bool = False,
+    expected_original_price: float | None = None,
 ) -> dict[str, Any]:
     return await _call_mcp_tool(
         "apply_discount",
         {
             "product_id": product_id,
             "percent": percent,
+            "target_price": target_price,
+            "best_price": best_price,
+            "expected_original_price": expected_original_price,
         },
     )
 

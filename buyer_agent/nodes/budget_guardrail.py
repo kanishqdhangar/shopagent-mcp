@@ -25,7 +25,13 @@ async def budget_guardrail(state: AgentState) -> dict[str, Any]:
             ],
         }
 
-    product_price = float(chosen_product.get("price", 0))
+    offer = state.get("pending_negotiation") or {}
+    accepted_offer = (
+        state.get("negotiation_status") == "accepted"
+        and offer.get("status") == "accepted"
+        and offer.get("product_id") == str(chosen_product.get("id"))
+    )
+    product_price = float(offer.get("discounted_price")) if accepted_offer else float(chosen_product.get("price", 0))
 
     # No explicit budget means there is no budget restriction.
     if budget_ceiling is None:

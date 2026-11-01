@@ -170,7 +170,10 @@ async def check_inventory(
 @mcp.tool()
 async def apply_discount(
     product_id: str,
-    percent: float,
+    percent: float | None = None,
+    target_price: float | None = None,
+    best_price: bool = False,
+    expected_original_price: float | None = None,
 ) -> dict:
     """
     Apply a discount to a product price.
@@ -193,6 +196,9 @@ async def apply_discount(
             db,
             parsed_product_id,
             percent,
+            target_price,
+            best_price,
+            expected_original_price,
         )
 
 @mcp.tool()

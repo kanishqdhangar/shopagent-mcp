@@ -12,6 +12,7 @@ from nodes.confirm import confirm
 from nodes.confirm_alternative import confirm_alternative
 from nodes.checkout_alternative import checkout_alternative
 from nodes.await_payment import await_payment, handle_payment_failure
+from nodes.negotiate import negotiate, validate_negotiation
 
 MAX_CONFIDENCE_RETRIES = 2
 CONFIDENCE_THRESHOLD = 0.5
@@ -30,12 +31,24 @@ def route_on_confidence(state: AgentState):
     parsed_filters = state.get("parsed_filters") or {}
     intent_type = parsed_filters.get("intent_type", "search")
 
+    if state.get("negotiation_requested"):
+        return "negotiate"
+
     # Only explicit purchase and restock requests can reach checkout.
     if intent_type in ("purchase", "restock"):
         return "purchase"
 
     # Search, comparison, and unknown intents never reach checkout.
     return "display"
+
+
+def route_initial_request(state: AgentState):
+    kind = state.get("request_kind")
+    if kind == "negotiate":
+        return "negotiate"
+    if kind == "checkout_accepted":
+        return "validate_negotiation"
+    return "parse_intent"
 
 def route_on_failure(state: AgentState):
     failure_reason = state.get("failure_reason")
@@ -156,11 +169,19 @@ async def build_buyer_graph():
         "checkout_alternative",
         checkout_alternative,
     )
+    builder.add_node("negotiate", negotiate)
+    builder.add_node("validate_negotiation", validate_negotiation)
 
-    builder.add_edge(
-        START,
-        "parse_intent",
-    )
+    builder.add_conditional_edges(START, route_initial_request, {
+        "parse_intent": "parse_intent",
+        "negotiate": "negotiate",
+        "validate_negotiation": "validate_negotiation",
+    })
+    builder.add_edge("negotiate", END)
+    builder.add_conditional_edges("validate_negotiation", route_on_failure, {
+        "failed": END,
+        "proceed": "budget_guardrail",
+    })
 
     builder.add_edge(
         "parse_intent",
@@ -177,6 +198,7 @@ async def build_buyer_graph():
         route_on_confidence,
         {
             "retry": "parse_intent",
+            "negotiate": "negotiate",
             "purchase": "check_upsell",
             "display": END,
             "failed": "handle_low_confidence",

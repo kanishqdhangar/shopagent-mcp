@@ -24,6 +24,19 @@ export type AgentResponse = {
   payment_required?: boolean
   payment?: PaymentDetails | null
   payment_status?: string | null
+  negotiation?: NegotiationOffer | null
+}
+
+export type NegotiationOffer = {
+  product_id?: string
+  product_name?: string
+  original_price?: number
+  discount_percent?: number
+  discounted_price?: number
+  status?: string
+  maximum_discount_percent?: number
+  rejection_reason?: string | null
+  history?: { status: string; discount_percent?: number; price?: number; reason?: string }[]
 }
 
 export type PaymentDetails = {
@@ -49,6 +62,7 @@ export type ChatMessage = {
   failureReason?: string | null
   payment?: PaymentDetails | null
   paymentRequired?: boolean
+  negotiation?: NegotiationOffer | null
 }
 
 export type Conversation = { id: string; title: string; updatedAt: number; messages: ChatMessage[] }

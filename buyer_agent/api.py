@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from langgraph.types import Command
 from graph import build_buyer_graph
+from services.negotiation import parse_negotiation_message
 
 
 buyer_graph = None
@@ -54,6 +55,7 @@ class ChatResponse(BaseModel):
     payment_required: bool = False
     payment: Optional[dict[str, Any]] = None
     payment_status: Optional[str] = None
+    negotiation: Optional[dict[str, Any]] = None
 
 
 # -------------------------
@@ -96,6 +98,7 @@ def build_chat_response(result: dict, session_id: str) -> ChatResponse:
                 payment_required=True,
                 payment=interrupt_payload.get("payment") or result.get("payment_details"),
                 payment_status=result.get("payment_status", "pending"),
+                negotiation=result.get("pending_negotiation"),
             )
         product = interrupt_payload.get("product", {})
 
@@ -115,12 +118,42 @@ def build_chat_response(result: dict, session_id: str) -> ChatResponse:
             ),
             order_id=result.get("order_id"),
             failure_reason=result.get("failure_reason"),
+            negotiation=result.get("pending_negotiation"),
         )
 
     chosen_product = result.get("chosen_product")
     candidates = result.get("candidates", [])
 
-    if intent_type == "compare":
+    negotiation_status = result.get("negotiation_status")
+    negotiation = result.get("pending_negotiation")
+    if negotiation:
+        negotiation = {**negotiation, "status": negotiation_status or negotiation.get("status"),
+                       "history": result.get("negotiation_history", [])}
+    if negotiation_status == "pending" and negotiation:
+        response = (f"The seller's configured discount policy offers {negotiation['discount_percent']:.2f}% off "
+                    f"{negotiation.get('product_name') or 'this product'}: ₹{negotiation['original_price']:,.2f} "
+                    f"to ₹{negotiation['discounted_price']:,.2f}. You can accept, counteroffer, or reject.")
+        products = [result["chosen_product"]] if result.get("chosen_product") else []
+    elif negotiation_status == "maximum_reached" and negotiation:
+        response = (f"That request exceeds the seller's configured discount policy. The maximum is "
+                    f"{negotiation['discount_percent']:.2f}%; the best allowed price is ₹{negotiation['discounted_price']:,.2f}.")
+        products = [result["chosen_product"]] if result.get("chosen_product") else []
+    elif negotiation_status == "accepted":
+        response = (f"Offer accepted at ₹{float((negotiation or {}).get('discounted_price', result.get('negotiated_price') or 0)):,.2f}. "
+                    "Say ‘buy it’ when you want me to continue to checkout.")
+        products = [result["chosen_product"]] if result.get("chosen_product") else []
+    elif negotiation_status == "rejected":
+        reason = (negotiation or {}).get("rejection_reason")
+        response = (f"The seller rejected that request: {reason} No order was placed; we can continue shopping at the catalog price." if reason
+                    else "Offer rejected. No order was placed; we can continue shopping at the catalog price.")
+        products = [result["chosen_product"]] if result.get("chosen_product") else []
+    elif negotiation_status == "cancelled":
+        response = "Negotiation cancelled. No order was placed."
+        products = [result["chosen_product"]] if result.get("chosen_product") else []
+    elif negotiation_status == "no_discount":
+        response = f"There is no discount available for this request. The catalog price is ₹{float(result.get('original_price') or 0):,.2f}."
+        products = [result["chosen_product"]] if result.get("chosen_product") else []
+    elif intent_type == "compare":
         products = candidates
 
         if chosen_product:
@@ -172,6 +205,7 @@ def build_chat_response(result: dict, session_id: str) -> ChatResponse:
         order_id=result.get("order_id"),
         failure_reason=result.get("failure_reason"),
         payment_status=result.get("payment_status"),
+        negotiation=negotiation,
     )
 
 # -------------------------
@@ -208,6 +242,26 @@ async def chat(request: ChatRequest):
             detail="This conversation has a pending approval or payment. Resolve it before sending another request.",
         )
 
+    previous = dict(snapshot.values) if snapshot and snapshot.values else {}
+    pending = previous.get("pending_negotiation") or {}
+    negotiation_action = parse_negotiation_message(request.message, pending_offer=bool(pending))
+    request_kind = "new"
+    preserve = {}
+    negotiation_requested = False
+    if previous.get("chosen_product") and negotiation_action:
+        preserve = {key: previous.get(key) for key in (
+            "chosen_product", "candidates", "parsed_filters", "budget_ceiling", "decision_log",
+            "pending_negotiation", "negotiation_history", "negotiation_attempts", "original_price",
+            "negotiation_product_id", "offered_discount_percent", "negotiated_price", "negotiation_status",
+        )}
+        request_kind = "negotiate"
+        if (negotiation_action.get("action") == "accept" and
+                previous.get("negotiation_status") == "accepted" and
+                negotiation_action.get("purchase_authorized")):
+            request_kind = "checkout_accepted"
+    elif negotiation_action and negotiation_action.get("action") in ("request_percent", "request_target_price", "request_best"):
+        negotiation_requested = True
+
     initial_state = {
         "run_id": str(uuid.uuid4()),
         "thread_id": request.session_id,
@@ -229,7 +283,27 @@ async def chat(request: ChatRequest):
         "pending_alternative": None,
         "alternative_approved": False,
         "confirmation_status": "not_required",
+        "negotiation_status": "none",
+        "negotiation_product_id": None,
+        "original_price": None,
+        "requested_discount_percent": None,
+        "offered_discount_percent": None,
+        "negotiated_price": None,
+        "negotiation_attempts": 0,
+        "pending_negotiation": None,
+        "negotiation_history": [],
+        "negotiation_action": negotiation_action,
+        "negotiation_requested": negotiation_requested,
+        "purchase_authorized": False,
+        "request_kind": request_kind,
     }
+    initial_state.update({key: value for key, value in preserve.items() if value is not None})
+    initial_state["goal"] = request.message
+    initial_state["run_id"] = str(uuid.uuid4())
+    initial_state["thread_id"] = request.session_id
+    initial_state["request_kind"] = request_kind
+    initial_state["negotiation_action"] = negotiation_action
+    initial_state["negotiation_requested"] = negotiation_requested
 
     try:
         result = await buyer_graph.ainvoke(

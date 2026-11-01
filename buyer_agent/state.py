@@ -50,4 +50,19 @@ class AgentState(TypedDict):
     decision_log: list[DecisionLogEntry]
     failure_reason: Optional[str]
 
+    # Seller-validated, product-scoped bargaining context.
+    negotiation_status: str
+    negotiation_product_id: Optional[str]
+    original_price: Optional[float]
+    requested_discount_percent: Optional[float]
+    offered_discount_percent: Optional[float]
+    negotiated_price: Optional[float]
+    negotiation_attempts: int
+    pending_negotiation: Optional[dict]
+    negotiation_history: list[dict]
+    negotiation_action: Optional[dict]
+    negotiation_requested: bool
+    purchase_authorized: bool
+    request_kind: str
+
     

@@ -51,9 +51,20 @@ async def checkout(state: AgentState) -> dict[str, Any]:
         )
 
     budget_ceiling = state.get("budget_ceiling")
+    offer = state.get("pending_negotiation") or {}
+    accepted_offer = (
+        state.get("negotiation_status") == "accepted"
+        and offer.get("status") == "accepted"
+        and offer.get("product_id") == str(chosen_product.get("id"))
+    )
 
     async def attempt_order(product):
         arguments = {"items": [{"product_id": str(product["id"]), "quantity": 1}]}
+        if accepted_offer and str(product.get("id")) == offer.get("product_id"):
+            arguments["items"][0].update({
+                "discount_percent": offer.get("discount_percent"),
+                "expected_original_price": offer.get("original_price"),
+            })
         if state.get("thread_id"):
             arguments["graph_thread_id"] = state["thread_id"]
         return await create_order(**arguments)
@@ -75,7 +86,7 @@ async def checkout(state: AgentState) -> dict[str, Any]:
             decision="Order created",
             reason=(
                 f"Created order {order_id} for "
-                f"{chosen_product.get('name')}."
+                f"{chosen_product.get('name')}" + (f" with seller-validated {offer.get('discount_percent')}% discount." if accepted_offer else ".")
             ),
             tokens_used=0,
             latency_ms=latency(),

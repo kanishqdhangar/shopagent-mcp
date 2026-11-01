@@ -27,6 +27,7 @@ workflow state, and reliable audit-event delivery.
 -   [Highlights](#highlights)
 -   [Architecture](#architecture)
 -   [Shopping workflow](#shopping-workflow)
+-   [Conversational negotiation](#conversational-negotiation)
 -   [Technology stack](#technology-stack)
 -   [Reliability and safety](#reliability-and-safety)
 -   [Repository structure](#repository-structure)
@@ -42,6 +43,9 @@ workflow state, and reliable audit-event delivery.
 
 -   **Conversational shopping agent:** Interprets shopping requests and
     coordinates product retrieval, comparison, and purchase workflows.
+-   **Conversational bargaining:** Lets shoppers request percentage or
+    target-price offers, counteroffer, accept, reject, or cancel within
+    the seller's configured discount limit.
 -   **Agent orchestration:** Uses LangGraph to model the buyer-agent
     workflow and its conditional transitions.
 -   **MCP-based commerce tools:** Separates the buyer agent from
@@ -173,6 +177,79 @@ user did not authorize:
     changed while waiting.
 -   The alternative is checked against the budget again before order
     creation.
+
+------------------------------------------------------------------------
+
+## Conversational negotiation
+
+The assistant supports a separate, session-based bargaining flow for a
+selected product. A shopper can ask for a percentage discount, request a
+best price, propose a target price, or send a counteroffer in a later
+message. The negotiation continues through the existing `/chat` API and
+uses the same `session_id`; it does not create a separate negotiation
+session or endpoint.
+
+The buyer agent recognizes the negotiation action and asks the seller's
+MCP `apply_discount` tool for a quote. The seller reads the original
+catalog price, calculates the offer, and enforces `MAX_DISCOUNT_PERCENT`
+(15% by default). A target price is converted to its implied discount
+percentage by the seller. Requests above the seller limit are rejected;
+the seller may return its best allowed offer. The product's catalog price
+is not changed, and a new quote is always calculated from that original
+price, so discounts do not stack.
+
+An offer is returned as structured `negotiation` data in the `/chat`
+response. The assistant UI displays the original price, discount, savings,
+offer price, offer history, and available actions. Accepting an offer
+records acceptance but does not itself place an order. The shopper must
+explicitly ask to buy the product before checkout continues. Before
+checkout, the buyer agent revalidates the accepted offer with the seller;
+order creation independently checks the discount limit and expected
+catalog price again. The seller records the discounted unit price in the
+order cart and creates the Razorpay order using the resulting total.
+
+Example request:
+
+```json
+{
+  "message": "Find running shoes and give me 10% off",
+  "session_id": "shopper-session-123"
+}
+```
+
+The response includes an offer similar to:
+
+```json
+{
+  "response": "The seller's configured discount policy offers 10.00% off Running shoes: ₹2,499.00 to ₹2,249.10. You can accept, counteroffer, or reject.",
+  "session_id": "shopper-session-123",
+  "negotiation": {
+    "product_id": "<seller product UUID>",
+    "product_name": "Running shoes",
+    "original_price": 2499.0,
+    "discount_percent": 10.0,
+    "discounted_price": 2249.1,
+    "status": "pending",
+    "history": []
+  }
+}
+```
+
+Continue bargaining with the same `session_id`, for example:
+`{"message":"Can you make it 12%?","session_id":"shopper-session-123"}`.
+After accepting, send an explicit purchase message such as `Buy it` to
+proceed to checkout.
+
+### Negotiation and automated upsells are separate
+
+Conversational bargaining obtains seller-validated discounts for the
+selected product. The current `check_upsell` node separately considers
+higher-priced in-stock candidates already present in the search results.
+It does not search for complementary products or apply a discount to an
+upsell. The budget guardrail checks the accepted negotiated price for the
+selected product, but does not combine a complementary upsell price with
+that product. Do not interpret the bargaining feature as a discounted
+complementary-product workflow.
 
 ------------------------------------------------------------------------
 
@@ -389,7 +466,8 @@ Run the buyer-agent tests from the repository root:
 docker compose run --rm --no-deps buyer-agent pytest tests/ -v
 ```
 
-The current verified suite contains **43 passing tests**. It covers:
+The current verified buyer-agent suite contains **51 passing tests**. It
+covers:
 
 -   Checkout and alternative-product handling.
 -   Explicit approval and rejection.
@@ -398,6 +476,11 @@ The current verified suite contains **43 passing tests**. It covers:
 -   Payment confirmation outcomes.
 -   Redis-backed interrupt/resume checkpoint behavior.
 -   Stock-failure workflow behavior.
+-   Negotiation message parsing, counteroffers, acceptance, and
+    seller-provided maximum-offer handling.
+
+Seller discount calculation tests are in `seller/tests/`. The seller
+container must have pytest installed to run them.
 
 Some older files in the test directory are manual test runners and are
 not necessarily collected by pytest.
